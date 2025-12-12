@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Volume Break Detector — EMA-first two-phase scan (15m)</title>
+  <title>Volume Break Detector — Candle above EMA200 filter (15m)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -24,8 +24,8 @@
 </head>
 <body>
   <div class="card">
-    <h1>Volume Break Detector — EMA-first two-phase scan (15m)</h1>
-    <p>Two-phase scan: (A) find green USDT pairs that have <strong>EMA70→EMA200 bullish cross</strong>, (B) run the volume-break detector only on those. Blacklist is applied before scanning.</p>
+    <h1>Volume Break Detector — Candle above EMA200 filter (15m)</h1>
+    <p>Two-phase scan: (A) find green USDT pairs where the <strong>last candle closes above EMA200</strong>, (B) run the volume-break detector only on those. Blacklist is applied before scanning.</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
@@ -39,7 +39,7 @@
 
     <div class="debug" id="debugLine">Debug: —</div>
     <div style="margin-top:8px"><small id="blacklistInfo">Blacklist: 0 symbols filtered</small></div>
-    <div style="margin-top:6px"><small id="emaInfo">EMA-OK: 0 symbols (will be listed below)</small></div>
+    <div style="margin-top:6px"><small id="emaInfo">EMA-OK: 0 symbols (last close above EMA200)</small></div>
   </div>
 
   <div class="card">
@@ -89,7 +89,7 @@ let blacklist = [
 ];
 
 document.addEventListener('DOMContentLoaded', ()=> {
-  document.getElementById('blacklistArea').value = blacklist.join('\\n');
+  document.getElementById('blacklistArea').value = blacklist.join('\n');
   document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
 });
 
@@ -132,21 +132,17 @@ function calcEMA(period, prices){
   }
   return out;
 }
-function isBullishEMACrossFromCloses(closes){
-  if(closes.length < 210) return false;
-  const ema70 = calcEMA(70, closes);
-  const ema200 = calcEMA(200, closes);
-  const len = closes.length;
-  const prevIdx = len - 2;
-  const lastIdx = len - 1;
-  const prev70 = ema70[prevIdx], prev200 = ema200[prevIdx];
-  const last70 = ema70[lastIdx], last200 = ema200[lastIdx];
-  if(prev70 == null || prev200 == null || last70 == null || last200 == null) return false;
-  return (prev70 <= prev200) && (last70 > last200);
-}
-function isBullishEMACross(klines){
+
+// NEW: simpler condition — last candle close must be above EMA200
+function isLastCloseAboveEMA200(klines){
   const closes = klines.map(k => safeNum(k.close));
-  return isBullishEMACrossFromCloses(closes);
+  if(closes.length < 210) return false; // need enough data to seed EMA200
+  const ema200 = calcEMA(200, closes);
+  const lastIdx = closes.length - 1;
+  const lastEMA200 = ema200[lastIdx];
+  const lastClose = closes[lastIdx];
+  if(lastEMA200 == null) return false;
+  return lastClose > lastEMA200;
 }
 
 /* ---------------------------
@@ -256,8 +252,8 @@ async function runScan(){
   setDebug(`greenPairs=${greenPairs.length} (first 8): ${greenPairs.slice(0,8).map(x=>x.symbol).join(', ')}`);
   if(greenPairs.length === 0){ setStatus('No green USDT pairs (after blacklist)'); document.getElementById('matches').innerText='No green pairs'; return; }
 
-  // phase A: fetch klines in batches and compute EMA cross — collect EMA-OK symbols + store klines
-  setStatus('Phase A: fetching klines & checking EMA cross (this may take a while)...');
+  // phase A: fetch klines in batches and compute "last close above EMA200" — collect EMA-OK symbols + store klines
+  setStatus('Phase A: fetching klines & checking last-close > EMA200 (this may take a while)...');
   const batchSize = Number(document.getElementById('batchSize').value) || 3;
   const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
 
@@ -268,8 +264,8 @@ async function runScan(){
   await batchMap(greenPairs, async (p) => {
     try{
       const kl = await fetchKlines(p.symbol);
-      // compute EMA cross quickly
-      const emaOk = isBullishEMACross(kl);
+      // check last close > EMA200
+      const emaOk = isLastCloseAboveEMA200(kl);
       if(emaOk){
         emaOkSymbols.push({symbol:p.symbol, pct:p.pct});
         klinesMap[p.symbol] = kl; // store for phase B
@@ -283,7 +279,7 @@ async function runScan(){
   }, batchSize, 700);
 
   setDebug(`EMA-OK count: ${emaOkSymbols.length}`);
-  document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} symbols (phase A) — fetch failed: ${fetchFailed}`;
+  document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} symbols (last close > EMA200) — fetch failed: ${fetchFailed}`;
   // show EMA-OK symbols in UI
   document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
 
@@ -299,7 +295,6 @@ async function runScan(){
   for(const p of emaOkSymbols){
     try{
       const kl = klinesMap[p.symbol];
-      // use recent window to speed up detection
       const windowCandles = kl.slice(-120);
       const match = detectVolumeBreak(windowCandles, volRatio);
       if(match && match.found){
@@ -323,8 +318,8 @@ async function runScan(){
   let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedVol</th><th>GreenVol</th><th>Recovered?</th><th>Actions</th></tr></thead><tbody>';
   for(const r of results){
     html += `<tr class="match-row"><td>${r.symbol}</td><td>${Number(r.pct).toFixed(2)}%</td><td>${Number(r.match.redVol).toLocaleString()}</td><td class="ok">${Number(r.match.greenVol).toLocaleString()}</td><td>${r.match.recovered?'<span class="ok">Yes</span>':'<span class="warn">No</span>'}</td><td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td></tr>`;
-    const body = `EMA70 crossed EMA200 (bullish) — greenVol ${Number(r.match.greenVol).toLocaleString()} > redVol ${Number(r.match.redVol).toLocaleString()}`;
-    notifyUser('Volume Break + EMA Cross: '+r.symbol, body, r.symbol);
+    const body = `Last close > EMA200 — greenVol ${Number(r.match.greenVol).toLocaleString()} > redVol ${Number(r.match.redVol).toLocaleString()}`;
+    notifyUser('Volume Break + EMA Filter: '+r.symbol, body, r.symbol);
     if(document.getElementById('autoOpen').checked){
       try{ openSymbol(r.symbol); }catch(e){ console.warn('auto-open failed', e); }
     }
@@ -374,11 +369,11 @@ document.getElementById('testBtn').addEventListener('click', async ()=>{
   out.textContent = '';
   try{
     const k = await fetchKlines(s);
-    st.textContent = 'Checking EMA cross...';
-    const emaOk = isBullishEMACross(k);
+    st.textContent = 'Checking last-close > EMA200...';
+    const emaOk = isLastCloseAboveEMA200(k);
     const vr = Number(document.getElementById('volRatio').value) || 1.0;
     const match = detectVolumeBreak(k.slice(-120), vr);
-    out.textContent = `Klines fetched: ${k.length}\nEMA70->EMA200 bullish cross: ${emaOk}\n\nPattern match:\n${match ? JSON.stringify(match, null, 2) : 'No pattern found'}`;
+    out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\nPattern match:\n${match ? JSON.stringify(match, null, 2) : 'No pattern found'}`;
     st.textContent = 'Done';
     console.log('Test klines sample:', k.slice(-24));
   }catch(e){
@@ -391,7 +386,7 @@ document.getElementById('testBtn').addEventListener('click', async ()=>{
 // update blacklist
 document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
   const text = document.getElementById('blacklistArea').value || '';
-  const lines = text.split(/\\r?\\n/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const lines = text.split(/\r?\n/).map(s => s.trim().toUpperCase()).filter(Boolean);
   blacklist = Array.from(new Set(lines));
   document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
   alert('Blacklist updated — ' + blacklist.length + ' symbols');

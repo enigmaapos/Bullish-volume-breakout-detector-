@@ -135,6 +135,12 @@
       <h1>Volume Break Detector — require top-24h candle to be RED</h1>
       <p class="muted">Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a red candle. Then looks for the earliest green that breaks that red's baseVol. This version shows ignored groups and the full list of top-24h red-volume symbols.</p>
 
+      <div style="margin-top:10px; display:flex; gap:14px; flex-wrap:wrap">
+  <small><strong>24h Green:</strong> <span id="cntGreen24h">—</span></small>
+  <small><strong>24h Red:</strong> <span id="cntRed24h">—</span></small>
+  <small><strong>Dominance:</strong> <span id="dominance24h">—</span></small>
+      </div>
+      
       <div class="controls" style="margin-top:8px">
         <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" /></label>
         <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" /></label>
@@ -411,6 +417,37 @@
       let tickers;
       try{ tickers = await fetch24hrAll(); }catch(e){ console.error(e); setStatus('24hr fetch error'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
 
+      // =====================
+// 24h MARKET DOMINANCE
+// =====================
+const usdtAll = tickers.filter(t =>
+  typeof t.symbol === 'string' &&
+  t.symbol.endsWith('USDT') &&
+  !t.symbol.includes('_')
+);
+
+let green24h = 0;
+let red24h = 0;
+
+for (const t of usdtAll) {
+  const pct = safeNum(t.priceChangePercent);
+  if (pct > 0) green24h++;
+  else if (pct < 0) red24h++;
+}
+
+const total24h = green24h + red24h;
+const greenPct = total24h ? ((green24h / total24h) * 100).toFixed(1) : '0';
+const redPct   = total24h ? ((red24h   / total24h) * 100).toFixed(1) : '0';
+
+document.getElementById('cntGreen24h').textContent = `${green24h} (${greenPct}%)`;
+document.getElementById('cntRed24h').textContent   = `${red24h} (${redPct}%)`;
+
+let domText = 'Neutral';
+if (green24h > red24h) domText = `🟢 Bulls (${greenPct}%)`;
+else if (red24h > green24h) domText = `🔴 Bears (${redPct}%)`;
+
+document.getElementById('dominance24h').textContent = domText;
+      
       const topN = Math.max(1, Math.min(200, Number(document.getElementById('topN').value || 30)));
       const greenPairsAll = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
         .filter(t => safeNum(t.priceChangePercent) > 0)

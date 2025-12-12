@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Volume Break Detector — require top-24h candle to be RED</title>
+  <style>
+    body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
+    .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
+    h1{font-size:18px;margin:0 0 8px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);text-align:left}
+    .ok{color:#2dd4bf}
+    .warn{color:#f59e0b}
+    .bad{color:#fb7185}
+    .match-row{background:linear-gradient(90deg, rgba(45,212,191,0.06), transparent)}
+    button{background:#111827;color:#e6eef8;padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.04);cursor:pointer}
+    input,select,textarea{background:#081226;color:#e6eef8;border:1px solid rgba(255,255,255,.04);padding:6px;border-radius:6px}
+    small{color:#9fb3cc}
+    pre{white-space:pre-wrap; max-height:220px; overflow:auto}
+    .debug{font-size:13px;color:#9fb3cc;margin-top:8px}
+    .notify{padding:8px;border-radius:6px;background:#072a1d;color:#bff3e8;margin-bottom:8px}
+    .list-inline{display:flex;gap:6px;flex-wrap:wrap}
+    .pill{background:#071722;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.03);cursor:pointer}
+    .section-title{display:flex;align-items:center;justify-content:space-between}
+    .meta-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
+    .meta-item{color:#9fb3cc}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Volume Break Detector — require top-24h candle to be RED</h1>
+    <p>Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a <strong>red</strong> candle. Then looks for the earliest green that breaks that red's baseVol.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
+      <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
+      <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" style="width:60px"/></label>
+      <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" style="width:80px"/></label>
+      <label><input id="autoOpen" type="checkbox" /> Auto-open on match</label>
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <small id="status">Idle</small>
+    </div>
+
+    <div class="meta-row">
+      <div class="meta-item"><strong>Last updated:</strong> <span id="lastUpdated">—</span></div>
+      <div class="meta-item"><strong>Next run:</strong> <span id="nextRun">—</span></div>
+      <div class="meta-item"><strong>Countdown:</strong> <span id="nextCountdown">—</span></div>
+    </div>
+
+    <div class="debug" id="debugLine">Debug: —</div>
+    <div style="margin-top:8px">
+      <small id="blacklistInfo">Blacklist: 0 symbols filtered</small> &nbsp;•&nbsp;
+      <small id="topInfo">Top-N selected: 0</small> &nbsp;•&nbsp;
+      <small id="emaInfo">EMA-OK: 0 (last close > EMA200)</small>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><h2>Matches</h2><small id="matchSummary">—</small></div>
+    <div id="matches">No results yet</div>
+  </div>
+
+  <div class="card">
+    <h2>EMA-Positive Symbols (phase A)</h2>
+    <div id="emaSymbols">None yet</div>
+  </div>
+
+  <div class="card">
+    <h2>Ignored / Groups</h2>
+    <div style="margin-top:8px;color:#9fb3cc">Use these lists to inspect which symbols were ignored and why. Click a pill to open the symbol on Binance.</div>
+    <div style="margin-top:10px">
+      <div><strong>Top-volume is NOT red</strong> (<span id="cntTopNotRed">0</span>):</div>
+      <div id="topNotRedList" class="list-inline"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div><strong>Broken earlier at lower price</strong> (<span id="cntBrokenLower">0</span>):</div>
+      <div id="brokenLowerList" class="list-inline"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div><strong>Green made day-high</strong> (<span id="cntGreenDayHigh">0</span>):</div>
+      <div id="greenDayHighList" class="list-inline"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div><strong>No later green breaker</strong> (<span id="cntNoBreaker">0</span>):</div>
+      <div id="noBreakerList" class="list-inline"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Top-24h RED high-volume symbols (top-volume candle is red)</h2>
+    <div style="margin-top:8px;color:#9fb3cc">These symbols had the *absolute highest baseVol* within the 24h window and that candle was red (Option A list).</div>
+    <div style="margin-top:10px">
+      <div id="topVolRedList" class="list-inline"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Quick Test (single symbol)</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="testSymbol" value="BTCUSDT" style="width:140px"/>
+      <button id="testBtn">Test Symbol</button>
+      <small id="testStatus">—</small>
+    </div>
+    <pre id="testOut"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Blacklist (editable)</h2>
+    <textarea id="blacklistArea" rows="6" style="width:100%;font-family:monospace"></textarea>
+    <div style="margin-top:8px"><button id="updateBlacklistBtn">Update Blacklist</button></div>
+  </div>
+
+<script>
+/* ---------------------------
+   Blacklist (initial)
+   --------------------------- */
+let blacklist = [
+  "ALPACAUSDT","BNXUSDT","ALPHAUSDT","OCEANUSDT","DGBUSDT","AGIXUSDT","LINAUSDT",
+  "LOKAUSDT","KEYUSDT","MDTUSDT","LOOMUSDT","RENUSDT","OMNIUSDT","SLERFUSDT",
+  "STMXUSDT","UXLINKUSDT","BSWUSDT","NEIROETHUSDT","VIDTUSDT","TROYUSDT",
+  "BAKEUSDT","AMBUSDT","MEMEFIUSDT","NULSUSDT","HIFIUSDT","LEVERUSDT","XEMUSDT",
+  "STRAXUSDT","COMBOUSDT","AI16ZUSDT","MILKUSDT","TOKENUSDT","SXPUSDT","MYROUSDT","1000XUSDT","DARUSDT"
+];
+
+document.addEventListener('DOMContentLoaded', ()=> {
+  document.getElementById('blacklistArea').value = blacklist.join('\n');
+  document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
+});
+
+/* ---------------------------
+   Config + utilities
+   --------------------------- */
+const API_BASE = 'https://fapi.binance.com';
+const INTERVAL = '15m';
+const KLINES_LIMIT = 300; // fetch 300 to compute EMA200
+let controller = { running:false };
+
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function safeNum(v){ return Number(String(v)); }
+function fmt(n){ if(n == null || isNaN(n)) return '-'; if(n >= 1e9) return (n/1e9).toFixed(2)+'B'; if(n >= 1e6) return (n/1e6).toFixed(2)+'M'; if(n >= 1e3) return (n/1e3).toFixed(2)+'K'; return Number(n).toLocaleString(); }
+function fmtPrice(p){ if(p==null) return '-'; return Number(p).toPrecision(6); }
+function fmtTime(ms){ try{ return new Date(ms).toLocaleString(); }catch(e){ return String(ms); } }
+
+async function batchMap(items, fn, batchSize=3, delayMs=700){
+  const out=[];
+  for(let i=0;i<items.length;i+=batchSize){
+    const batch = items.slice(i,i+batchSize);
+    const promises = batch.map(x=>fn(x).catch(e=>({__err:e.message||String(e)})));
+    const res = await Promise.all(promises);
+    out.push(...res);
+    if(i+batchSize < items.length) await sleep(delayMs);
+  }
+  return out;
+}
+
+/* ---------------------------
+   EMA helpers
+   --------------------------- */
+function calcEMA(period, prices){
+  const k = 2 / (period + 1);
+  const out = new Array(prices.length).fill(null);
+  if(prices.length === 0) return out;
+  let seedSum = 0;
+  const seedCount = Math.min(period, prices.length);
+  for(let i=0;i<seedCount;i++) seedSum += prices[i];
+  out[seedCount-1] = seedSum / seedCount;
+  for(let i=seedCount;i<prices.length;i++){
+    out[i] = (prices[i] - out[i-1]) * k + out[i-1];
+  }
+  return out;
+}
+function isLastCloseAboveEMA200(klines){
+  const closes = klines.map(k => safeNum(k.close));
+  if(closes.length < 210) return false;
+  const ema200 = calcEMA(200, closes);
+  const lastIdx = closes.length - 1;
+  const lastEMA200 = ema200[lastIdx];
+  const lastClose = closes[lastIdx];
+  if(lastEMA200 == null) return false;
+  return lastClose > lastEMA200;
+}
+
+/* ---------------------------
+   fetchKlines: preserve baseVol (kline[5]) as baseVol
+*/
+async function fetchKlines(symbol){
+  const url = `${API_BASE}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&limit=${KLINES_LIMIT}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('klines failed: '+res.status+' for '+symbol);
+  const data = await res.json();
+  // columns: [0 openTime,1 open,2 high,3 low,4 close,5 baseVol,6 closeTime,7 quoteVol,8 trades, ...]
+  return data.map(c=>({
+    openTime: c[0],
+    open: c[1],
+    high: c[2],
+    low: c[3],
+    close: c[4],
+    baseVol: c[5],
+    closeTime: c[6],
+    quoteVol: (c[7] !== undefined && c[7] !== null) ? c[7] : null,
+    trades: c[8]
+  }));
+}
+
+/* ---------------------------
+   Detector (unchanged logic)
+*/
+function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
+  if(!kllinesOrEnough(klines)) return null;
+  const last24h = klines.slice(-96);
+  if(last24h.length === 0) return null;
+  let dayHigh = -Infinity;
+  let redCount = 0;
+  last24h.forEach(c => {
+    const h = safeNum(c.high);
+    if(h > dayHigh) dayHigh = h;
+    if(safeNum(c.close) < safeNum(c.open)) redCount++;
+  });
+  const c = last24h.map(x => ({
+    openTime: x.openTime,
+    open: safeNum(x.open),
+    high: safeNum(x.high),
+    low: safeNum(x.low),
+    close: safeNum(x.close),
+    baseVol: safeNum(x.baseVol)
+  }));
+  let top = { idx: 0, candle: c[0] };
+  for(let i=1;i<c.length;i++){
+    if(c[i].baseVol > top.candle.baseVol) top = { idx:i, candle:c[i] };
+  }
+  const topIdx = top.idx;
+  const topC = top.candle;
+  if(!(topC.close < topC.open)){
+    return {
+      found: false,
+      reason: 'top_volume_not_red',
+      topIndex24h: topIdx, topCandle: topC,
+      topBaseVol: topC.baseVol,
+      dayHigh,
+      redCount24h: redCount
+    };
+  }
+  let firstGreen = null;
+  for(let j = topIdx + 1; j < c.length; j++){
+    const later = c[j];
+    if(later.close <= later.open) continue;
+    if(later.baseVol < topC.baseVol * volRatio) continue;
+    firstGreen = { idx: j, candle: later };
+    break;
+  }
+  if(!firstGreen) return {
+    found: false,
+    reason: 'no_later_green_breaker',
+    redCount24h: redCount,
+    topIndex24h: topIdx, topCandle: topC, topBaseVol: topC.baseVol, dayHigh
+  };
+  const g = firstGreen.candle;
+  if(g.high < topC.high){
+    return {
+      found: false,
+      reason: 'broken_earlier_at_lower_price',
+      redIndex24h: topIdx, redCandle: topC,
+      greenIndex24h: firstGreen.idx, greenCandle: g,
+      redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
+      dayHigh,
+      redCount24h: redCount
+    };
+  }
+  if(g.high >= dayHigh){
+    return {
+      found: false,
+      reason: 'green_made_day_high',
+      redIndex24h: topIdx, redCandle: topC,
+      greenIndex24h: firstGreen.idx, greenCandle: g,
+      redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
+      dayHigh,
+      redCount24h: redCount
+    };
+  }
+  return {
+    found: true,
+    redIndex24h: topIdx,
+    redCandle: topC,
+    greenIndex24h: firstGreen.idx,
+    greenCandle: g,
+    redBaseVol: topC.baseVol,
+    greenBaseVol: g.baseVol,
+    dayHigh,
+    redCount24h: redCount
+  };
+}
+function klinesOrEnough(klines){ return klines && klines.length >= 100; }
+
+/* ---------------------------
+   Notifications & helpers
+*/
+async function makeBeep(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = 900; g.gain.value = 0.06;
+    o.connect(g); g.connect(ctx.destination); o.start();
+    setTimeout(()=>{ o.stop(); ctx.close(); }, 180);
+  }catch(e){ console.warn('beep failed', e); }
+}
+function notifyUser(title, body, symbol){
+  if(window.Notification && Notification.permission === 'granted'){
+    const n = new Notification(title, { body }); n.onclick = ()=>{ window.focus(); openSymbol(symbol); };
+  }
+  const matchesEl = document.getElementById('matches');
+  const note = document.createElement('div');
+  note.className = 'notify';
+  note.innerHTML = `<strong>${title}</strong> — ${body} <div style="margin-top:6px"><button onclick="openSymbol('${symbol}')">Open on Binance</button> <button onclick="copySym('${symbol}')">Copy</button></div>`;
+  matchesEl.prepend(note);
+  makeBeep();
+}
+function openSymbol(sym){ window.open(`https://www.binance.com/en/futures/${sym}`, '_blank'); }
+function copySym(sym){ navigator.clipboard?.writeText(sym).then(()=>alert(sym+' copied')).catch(()=>alert('copy failed')); }
+
+/* ---------------------------
+   Next-run countdown handling
+   - nextRunTime (ms since epoch) stores when we'll run next
+   - countdownInterval updates display every second
+*/
+let nextRunTime = null;
+let countdownInterval = null;
+
+function setLastUpdated(ts){
+  const el = document.getElementById('lastUpdated');
+  el.textContent = ts ? new Date(ts).toLocaleString() : '—';
+}
+function setNextRun(msEpoch){
+  nextRunTime = msEpoch;
+  const nextRunEl = document.getElementById('nextRun');
+  if(!msEpoch){ nextRunEl.textContent = '—'; clearCountdown(); document.getElementById('nextCountdown').textContent = '—'; return; }
+  nextRunEl.textContent = new Date(msEpoch).toLocaleString();
+  startCountdown();
+}
+function startCountdown(){
+  clearCountdown();
+  countdownInterval = setInterval(()=> {
+    if(!nextRunTime){ clearCountdown(); document.getElementById('nextCountdown').textContent = '—'; return; }
+    const diff = Math.max(0, nextRunTime - Date.now());
+    const s = Math.ceil(diff/1000);
+    const min = Math.floor(s/60);
+    const sec = s % 60;
+    document.getElementById('nextCountdown').textContent = (min>0? (min+'m ') : '') + sec + 's';
+    if(diff <= 0){ // will run (or just ran)
+      document.getElementById('nextCountdown').textContent = '0s';
+      // let runScan or startLoop update nextRun time after sleep
+    }
+  }, 1000);
+}
+function clearCountdown(){ if(countdownInterval){ clearInterval(countdownInterval); countdownInterval = null; } }
+
+/* ---------------------------
+   Two-phase scan driver (uses the detector)
+*/
+function setStatus(s){ document.getElementById('status').textContent = s; }
+function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
+
+async function fetch24hrAll(){ const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr'); if(!res.ok) throw new Error('24hr fetch failed: '+res.status); return res.json(); }
+
+async function runScan(){
+  setStatus('Fetching 24h tickers (phase A list)...');
+  let tickers;
+  try{ tickers = await fetch24hrAll(); }catch(e){ console.error(e); setStatus('24hr fetch error'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+
+  const topN = Math.max(1, Math.min(200, Number(document.getElementById('topN').value || 30)));
+  const greenPairsAll = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
+    .filter(t => safeNum(t.priceChangePercent) > 0)
+    .map(t=>({symbol:t.symbol, pct:safeNum(t.priceChangePercent)}));
+  greenPairsAll.sort((a,b)=> b.pct - a.pct);
+  const topCandidates = greenPairsAll.slice(0, topN);
+  const topAfterBlacklist = topCandidates.filter(p => !blacklist.includes(p.symbol));
+  const filteredCount = topCandidates.length - topAfterBlacklist.length;
+  document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered — ${filteredCount} removed from top${topN}`;
+  document.getElementById('topInfo').textContent = `Top-N selected: ${topCandidates.length} (after blacklist: ${topAfterBlacklist.length})`;
+  setDebug(`topCandidates=${topCandidates.length} (first 8): ${topCandidates.slice(0,8).map(x=>x.symbol).join(', ')}`);
+  if(topAfterBlacklist.length === 0){ setStatus('No top-N green pairs'); document.getElementById('matches').innerText='No top-N pairs'; return; }
+
+  setStatus('Phase A: fetch klines & EMA200 filter...');
+  const batchSize = Number(document.getElementById('batchSize').value) || 3;
+  const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
+
+  const emaOkSymbols = [];
+  const klinesMap = {};
+  let fetchFailed = 0;
+
+  await batchMap(topAfterBlacklist, async (p) => {
+    try{
+      const kl = await fetchKlines(p.symbol);
+      const emaOk = isLastCloseAboveEMA200(kl);
+      if(emaOk){ emaOkSymbols.push({symbol:p.symbol, pct:p.pct}); klinesMap[p.symbol] = kl; }
+      return true;
+    }catch(e){ console.warn('fetch failed', p.symbol, e.message); fetchFailed++; return {symbol:p.symbol,__err:e.message}; }
+  }, batchSize, 700);
+
+  setDebug(`EMA-OK count: ${emaOkSymbols.length}`);
+  document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} (last close > EMA200) — fetch failed: ${fetchFailed}`;
+  document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
+
+  if(emaOkSymbols.length === 0){ setStatus('No EMA-OK'); document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected (fetch failed: ${fetchFailed})</div>`; setLastUpdated(Date.now()); return; }
+
+  setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
+  const results = [];
+  let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0, noBreaker:0 };
+  const brokenLowerSymbols = [];
+  const topVolRedSymbols = [];
+  const topNotRedSymbols = [];
+  const greenDayHighSymbols = [];
+  const noBreakerSymbols = [];
+
+  for(const p of emaOkSymbols){
+    try{
+      const kl = klinesMap[p.symbol];
+      const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+      if(match && match.found){
+        results.push({symbol:p.symbol, pct:p.pct, match});
+        topVolRedSymbols.push(p.symbol);
+      }
+      else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; topNotRedSymbols.push(p.symbol); }
+      else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; brokenLowerSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
+      else if(match && match.reason === 'green_made_day_high'){ counts.greenDayHigh++; greenDayHighSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
+      else if(match && match.reason === 'no_later_green_breaker'){ counts.noBreaker++; noBreakerSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
+    }catch(e){ console.warn('phase B failed for', p.symbol, e.message); }
+  }
+
+  // update ignored lists UI
+  document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
+  document.getElementById('topNotRedList').innerHTML = topNotRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+  document.getElementById('cntBrokenLower').textContent = counts.brokenLower;
+  document.getElementById('brokenLowerList').innerHTML = brokenLowerSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+  document.getElementById('cntGreenDayHigh').textContent = counts.greenDayHigh;
+  document.getElementById('greenDayHighList').innerHTML = greenDayHighSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+  document.getElementById('cntNoBreaker').textContent = counts.noBreaker;
+  document.getElementById('noBreakerList').innerHTML = noBreakerSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+  document.getElementById('topVolRedList').innerHTML = topVolRedSymbols.length ? topVolRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') : '<span style="color:#6b7280">—</span>';
+
+  const el = document.getElementById('matches');
+  if(results.length === 0){
+    el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
+    document.getElementById('matchSummary').textContent = `0 matches`;
+    setLastUpdated(Date.now());
+    setStatus('Scan complete — no matches');
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedCount(24h)</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
+  for(const r of results){
+    const m = r.match;
+    html += `<tr class="match-row">
+      <td>${r.symbol}</td>
+      <td>${Number(r.pct).toFixed(2)}%</td>
+      <td>${m.redCount24h ?? '-'}</td>
+      <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
+      <td>${fmt(m.redBaseVol)}</td>
+      <td>${fmtPrice(m.redCandle.high)}</td>
+      <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
+      <td class="ok">${fmt(m.greenBaseVol)}</td>
+      <td>${fmtPrice(m.greenCandle.high)}</td>
+      <td>${fmtPrice(m.dayHigh)}</td>
+      <td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td>
+    </tr>`;
+    notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)} — redCount24h: ${m.redCount24h}`, r.symbol);
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+  window._lastMatches = results;
+  document.getElementById('matchSummary').textContent = `${results.length} matches`;
+  setLastUpdated(Date.now());
+  setStatus('Scan complete — matches: '+results.length);
+}
+
+/* helpers to map last24 index to absolute openTime using the stored klines */
+function last24IndexToAbsTime(idx24, fullKlines){
+  try{
+    const offset = Math.max(0, fullKlines.length - 96);
+    const pos = offset + idx24;
+    return fullKlines[pos] ? fullKlines[pos].openTime : null;
+  }catch(e){ return null; }
+}
+
+/* ---------------------------
+   Controls & test + blacklist update
+*/
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  if(controller.running) return;
+  controller.running = true;
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  startLoop();
+});
+document.getElementById('stopBtn').addEventListener('click', ()=>{
+  controller.running = false;
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  setStatus('Stopped');
+  setNextRun(null); // clear next-run display & countdown
+});
+
+async function startLoop(){
+  if(window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied'){
+    try{ await Notification.requestPermission(); }catch(e){ console.warn('notification request failed', e); }
+  }
+  setStatus('Scanner running');
+  while(controller.running){
+    const poll = Math.max(10, Number(document.getElementById('pollSec').value || 60));
+    // Set nextRun to now + poll so the countdown shows while runScan executes (gives user feedback)
+    setNextRun(Date.now() + poll*1000);
+    try{ await runScan(); }catch(e){ console.error('scan error', e); setStatus('Scan error — see console'); }
+    // After runScan ends, set LastUpdated and compute nextRun for the sleep period
+    setLastUpdated(Date.now());
+    if(!controller.running) break;
+    // schedule next run time and sleep
+    const nextAt = Date.now() + poll*1000;
+    setNextRun(nextAt);
+    await sleep(poll * 1000);
+  }
+  // loop exited
+  setNextRun(null);
+  clearCountdown();
+}
+
+/* single-symbol test */
+document.getElementById('testBtn').addEventListener('click', async ()=>{
+  const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
+  const out = document.getElementById('testOut'); const st = document.getElementById('testStatus');
+  st.textContent = 'Fetching klines...'; out.textContent = '';
+  try{
+    const k = await fetchKlines(s);
+    st.textContent = 'Checking last-close > EMA200 & top-24h-topvol-is-red...';
+    const emaOk = isLastCloseAboveEMA200(k);
+    const vr = Number(document.getElementById('volRatio').value) || 1.0;
+    const match = detect24hTopVolMustBeRed_thenBreak_baseVol(k, vr);
+    out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\nResult:\n${match ? JSON.stringify(match, null, 2) : 'No pattern / insufficient data'}`;
+    st.textContent = 'Done';
+    console.log('Test klines sample:', k.slice(-24));
+  }catch(e){ st.textContent = 'Error'; out.textContent = 'Error: ' + (e.message || String(e)); console.error(e); }
+});
+
+document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
+  const text = document.getElementById('blacklistArea').value || '';
+  const lines = text.split(/\r?\n/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  blacklist = Array.from(new Set(lines));
+  document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
+  alert('Blacklist updated — ' + blacklist.length + ' symbols');
+});
+
+window.openSymbol = openSymbol;
+window.copySym = copySym;
+window.addEventListener('error', e=>console.error('Runtime error', e));
+</script>
+</body>
+</html>

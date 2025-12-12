@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Auto Volume Break Scanner — Binance Futures (15m)</title>
+  <style>
+    body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
+    .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
+    h1{font-size:18px;margin:0 0 8px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);text-align:left}
+    .ok{color:#2dd4bf}
+    .warn{color:#f59e0b}
+    .bad{color:#fb7185}
+    .match-row{background:linear-gradient(90deg, rgba(45,212,191,0.06), transparent)}
+    button{background:#111827;color:#e6eef8;padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.04);cursor:pointer}
+    input,select{background:#081226;color:#e6eef8;border:1px solid rgba(255,255,255,.04);padding:6px;border-radius:6px}
+    small{color:#9fb3cc}
+    pre{white-space:pre-wrap; max-height:220px; overflow:auto}
+    .debug{font-size:13px;color:#9fb3cc;margin-top:8px}
+    .notify{padding:8px;border-radius:6px;background:#072a1d;color:#bff3e8;margin-bottom:8px}
+    .spinner{display:inline-block;border:3px solid rgba(255,255,255,0.06);border-left-color:#2dd4bf;border-radius:50%;width:14px;height:14px;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Auto Volume Break Scanner — Binance Futures (15m)</h1>
+    <p>Auto-scans USDT perpetual pairs with positive 24h change for the <strong>red-high → green-lower-low (greenVol &gt;= redVol * volRatio)</strong> pattern.</p>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
+      <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" style="width:60px"/></label>
+      <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" style="width:80px"/></label>
+      <label><input id="autoOpen" type="checkbox" /> Auto-open on match</label>
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <small id="status">Idle</small>
+    </div>
+
+    <div class="debug" id="debugLine">Debug: —</div>
+    <div style="margin-top:8px"><small>Auto-start enabled on load.</small></div>
+  </div>
+
+  <div class="card">
+    <h2>Matches (live)</h2>
+    <div id="matches">No results yet</div>
+  </div>
+
+  <div class="card">
+    <h2>Quick Test (single symbol)</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="testSymbol" value="BTCUSDT" style="width:140px"/>
+      <button id="testBtn">Test Symbol</button>
+      <small id="testStatus">—</small>
+    </div>
+    <pre id="testOut"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Notes</h2>
+    <ul>
+      <li>Run from a static server (e.g. <code>python -m http.server</code>) to reduce CORS issues.</li>
+      <li>If you hit fetch/CORS issues, use a tiny server proxy (Node/Express) to avoid browser CORS limits.</li>
+      <li>Be gentle with polling and batch size to avoid public API rate limits.</li>
+    </ul>
+  </div>
+
+<script>
+/* ---------------------------
+   Config + utilities
+   --------------------------- */
+const API_BASE = 'https://fapi.binance.com';
+const INTERVAL = '15m';
+const KLINES_LIMIT = 60;
+let controller = { running:false };
+
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function safeNum(v){ return Number(String(v)); }
+
+async function batchMap(items, fn, batchSize=3, delayMs=700){
+  const out=[];
+  for(let i=0;i<items.length;i+=batchSize){
+    const batch = items.slice(i,i+batchSize);
+    const promises = batch.map(x=>fn(x).catch(e=>({__err:e.message||String(e)})));
+    const res = await Promise.all(promises);
+    out.push(...res);
+    if(i+batchSize < items.length) await sleep(delayMs);
+  }
+  return out;
+}
+
+/* ---------------------------
+   Detection algorithm
+   --------------------------- */
+function detectVolumeBreak(candles, volRatio=1.0){
+  if(!candles || candles.length < 8) return null;
+  const c = candles.map(x=>({
+    openTime: x.openTime,
+    open: safeNum(x.open),
+    high: safeNum(x.high),
+    low: safeNum(x.low),
+    close: safeNum(x.close),
+    volume: safeNum(x.volume)
+  }));
+  for(let i=0;i<c.length-4;i++){
+    const highC = c[i];
+    const nextSlice = c.slice(i+1, i+1+6);
+    if(highC.close >= highC.open) continue; // must be red
+    // find min low and index inside nextSlice
+    let minLow = Infinity, minIdx=-1;
+    for(let j=0;j<nextSlice.length;j++){
+      if(nextSlice[j].low < minLow){ minLow = nextSlice[j].low; minIdx = j; }
+    }
+    if(minIdx < 0) continue;
+    const lowC = nextSlice[minIdx];
+    if(lowC.close <= lowC.open) continue; // low must be green
+    if(lowC.volume < highC.volume * volRatio) continue; // volume condition
+    if(!(lowC.low < highC.low)) continue; // lower low required
+    const afterSlice = nextSlice.slice(minIdx+1, minIdx+1+3);
+    const recovered = afterSlice.some(x => x.close > highC.close);
+    return {found:true, highIndex:i, highCandle:highC, lowIndex:i+1+minIdx, lowCandle:lowC, redVol:highC.volume, greenVol:lowC.volume, recovered};
+  }
+  return null;
+}
+
+/* ---------------------------
+   Binance fetch helpers
+   --------------------------- */
+async function fetch24hrAll(){
+  const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr');
+  if(!res.ok) throw new Error('24hr fetch failed: '+res.status);
+  return res.json();
+}
+async function fetchKlines(symbol){
+  const url = `${API_BASE}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&limit=${KLINES_LIMIT}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('klines failed: '+res.status+' for '+symbol);
+  const data = await res.json();
+  return data.map(c=>({openTime:c[0], open:c[1], high:c[2], low:c[3], close:c[4], volume:c[5]}));
+}
+
+/* ---------------------------
+   Notifications / Alerts
+   --------------------------- */
+async function makeBeep(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.value = 900;
+    g.gain.value = 0.06;
+    o.connect(g); g.connect(ctx.destination);
+    o.start();
+    setTimeout(()=>{ o.stop(); ctx.close(); }, 180);
+  }catch(e){ console.warn('beep failed', e); }
+}
+function notifyUser(title, body, symbol){
+  // Desktop notification
+  if(window.Notification && Notification.permission === 'granted'){
+    const n = new Notification(title, { body });
+    n.onclick = ()=>{ window.focus(); openSymbol(symbol); };
+  }
+  // Visual highlight in page
+  const matchesEl = document.getElementById('matches');
+  const note = document.createElement('div');
+  note.className = 'notify';
+  note.innerHTML = `<strong>${title}</strong> — ${body} <div style="margin-top:6px"><button onclick="openSymbol('${symbol}')">Open on Binance</button> <button onclick="copySym('${symbol}')">Copy</button></div>`;
+  matchesEl.prepend(note);
+  // beep
+  makeBeep();
+}
+function openSymbol(sym){
+  // open Binance Futures symbol page (may open US region differently)
+  const url = `https://www.binance.com/en/futures/${sym}`;
+  window.open(url, '_blank');
+}
+function copySym(sym){
+  navigator.clipboard?.writeText(sym).then(()=>alert(sym+' copied to clipboard')).catch(()=>alert('Copy failed'));
+}
+
+/* ---------------------------
+   UI + main scan
+   --------------------------- */
+function setStatus(s){ document.getElementById('status').textContent = s; }
+function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
+
+async function runScanOnce(){
+  setStatus('Fetching 24h tickers...');
+  let tickers;
+  try{ tickers = await fetch24hrAll(); }
+  catch(e){ console.error(e); setStatus('24hr fetch error — see console'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+  const greenPairs = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
+    .filter(t => safeNum(t.priceChangePercent) > 0)
+    .map(t=>({symbol:t.symbol, pct:safeNum(t.priceChangePercent)}));
+  setDebug(`greenPairs=${greenPairs.length} (first 8): ${greenPairs.slice(0,8).map(x=>x.symbol).join(', ')}`);
+  if(greenPairs.length === 0){ setStatus('No green USDT pairs'); document.getElementById('matches').innerText='No green pairs'; return; }
+
+  setStatus(`Found ${greenPairs.length} green USDT pairs — fetching klines`);
+  const batchSize = Number(document.getElementById('batchSize').value) || 3;
+  const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
+  const results = [];
+  let totalFailed = 0;
+
+  await batchMap(greenPairs, async (p) => {
+    try{
+      const klines = await fetchKlines(p.symbol);
+      const match = detectVolumeBreak(klines, volRatio);
+      if(match && match.found){ results.push({symbol:p.symbol, pct:p.pct, match}); }
+      else console.debug('no match', p.symbol);
+      return true;
+    }catch(e){
+      console.warn('failed', p.symbol, e.message);
+      totalFailed++;
+      return {symbol:p.symbol,__err:e.message};
+    }
+  }, batchSize, 700);
+
+  const el = document.getElementById('matches');
+  if(results.length === 0){
+    el.innerHTML = `<div>No matches detected in this scan. (failed fetches: ${totalFailed})</div>`;
+    setStatus('Scan complete — no matches');
+    return;
+  }
+
+  // render table + notify for each match
+  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedVol</th><th>GreenVol</th><th>Recovered?</th><th>Actions</th></tr></thead><tbody>';
+  for(const r of results){
+    html += `<tr class="match-row"><td>${r.symbol}</td><td>${Number(r.pct).toFixed(2)}%</td><td>${Number(r.match.redVol).toLocaleString()}</td><td class="ok">${Number(r.match.greenVol).toLocaleString()}</td><td>${r.match.recovered?'<span class="ok">Yes</span>':'<span class="warn">No</span>'}</td><td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td></tr>`;
+    // notify once per symbol
+    const body = `greenVol ${Number(r.match.greenVol).toLocaleString()} > redVol ${Number(r.match.redVol).toLocaleString()}`;
+    notifyUser('Volume Break Detected: '+r.symbol, body, r.symbol);
+    // optional auto-open
+    if(document.getElementById('autoOpen').checked){
+      try{ openSymbol(r.symbol); }catch(e){ console.warn('auto-open failed', e); }
+    }
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+  window._lastMatches = results;
+  setStatus('Scan complete — matches: '+results.length);
+}
+
+/* ---------------------------
+   Controls + auto-start
+   --------------------------- */
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  if(controller.running) return;
+  controller.running = true;
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  startLoop();
+});
+document.getElementById('stopBtn').addEventListener('click', ()=>{
+  controller.running = false;
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  setStatus('Stopped');
+});
+
+async function startLoop(){
+  // request notification permission once
+  if(window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied'){
+    try{ await Notification.requestPermission(); }catch(e){ console.warn('notification request failed', e); }
+  }
+  setStatus('Scanner running');
+  while(controller.running){
+    try{
+      await runScanOnce();
+    }catch(e){
+      console.error('scan error', e);
+      setStatus('Scan error — see console');
+    }
+    if(!controller.running) break;
+    const poll = Math.max(10, Number(document.getElementById('pollSec').value || 60));
+    await sleep(poll * 1000);
+  }
+}
+
+/* ---------------------------
+   Single-symbol test
+   --------------------------- */
+document.getElementById('testBtn').addEventListener('click', async ()=>{
+  const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
+  const out = document.getElementById('testOut');
+  const st = document.getElementById('testStatus');
+  st.textContent = 'Fetching klines...';
+  out.textContent = '';
+  try{
+    const k = await fetchKlines(s);
+    st.textContent = 'Running detector...';
+    const vr = Number(document.getElementById('volRatio').value) || 1.0;
+    const res = detectVolumeBreak(k, vr);
+    out.textContent = 'Klines fetched: ' + k.length + '\\n\\n' + (res?JSON.stringify(res,null,2):'No pattern found');
+    st.textContent = 'Done';
+    console.log('Test klines sample:', k.slice(-12));
+  }catch(e){
+    st.textContent = 'Error';
+    out.textContent = 'Error: ' + (e.message || String(e));
+    console.error(e);
+  }
+});
+
+/* ---------------------------
+   Auto-start scanning on load (you can disable by setting autoStart=false)
+   --------------------------- */
+const autoStart = true;
+window.addEventListener('load', ()=>{
+  if(autoStart){
+    // small delay to let UI render and user cancel if wanted
+    setTimeout(()=>{
+      if(!controller.running){
+        document.getElementById('startBtn').click();
+      }
+    }, 900);
+  }
+});
+
+// expose helpers to global for buttons created dynamically
+window.openSymbol = openSymbol;
+window.copySym = copySym;
+
+window.addEventListener('error', e=>console.error('Runtime error', e));
+</script>
+</body>
+</html>

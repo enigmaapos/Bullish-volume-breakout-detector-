@@ -1,15 +1,13 @@
 <!doctype html>
-
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Binance Futures — Volume Break Detector (15m, USDT pairs, 24h green)</title>
+  <title>Binance Futures — Volume Break Detector (15m)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
     h1{font-size:18px;margin:0 0 8px}
-    pre{white-space:pre-wrap}
     table{width:100%;border-collapse:collapse}
     th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);text-align:left}
     .ok{color:#2dd4bf}
@@ -18,198 +16,173 @@
     button{background:#111827;color:#e6eef8;padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.04);cursor:pointer}
     input,select{background:#081226;color:#e6eef8;border:1px solid rgba(255,255,255,.04);padding:6px;border-radius:6px}
     small{color:#9fb3cc}
+    pre{white-space:pre-wrap; max-height:220px; overflow:auto}
+    .debug{font-size:13px;color:#9fb3cc;margin-top:8px}
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>Binance Futures — Volume Break Detector</h1>
-    <p>Scans USDT perpetual pairs on Binance Futures (REST). Detects structure: <strong>red volume at a recent high</strong> followed by a <strong>green volume spike at a lower low that exceeds the red volume</strong>. Only checks symbols with <em>positive 24h price change</em>. Timeframe: <strong>15m</strong>.</p>
-    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <h1>Binance Futures — Volume Break Detector (15m)</h1>
+    <p>Detects: red volume at a recent high → green volume at a lower low that exceeds the red volume. Filters for USDT pairs with 24h &gt; 0.</p>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
       <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" style="width:60px"/></label>
+      <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" style="width:80px"/></label>
       <button id="startBtn">Start Scan</button>
       <button id="stopBtn" disabled>Stop</button>
       <small id="status">Idle</small>
     </div>
-  </div>  <div class="card">
+
+    <div class="debug" id="debugLine">Debug: —</div>
+  </div>
+
+  <div class="card">
     <h2>Matches</h2>
     <div id="matches">No results yet</div>
-  </div>  <div class="card">
-    <h2>Notes / Rate Limit Safety</h2>
+  </div>
+
+  <div class="card">
+    <h2>Quick Test (single symbol)</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="testSymbol" value="BTCUSDT" style="width:140px"/>
+      <button id="testBtn">Test Symbol</button>
+      <small id="testStatus">—</small>
+    </div>
+    <pre id="testOut"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Notes</h2>
     <ul>
-      <li>Uses Binance Futures public endpoints: <code>/fapi/v1/ticker/24hr</code> and <code>/fapi/v1/klines</code>.</li>
-      <li>Batch fetches klines with a small concurrency and a short delay between batches to avoid hitting public rate limits.</li>
-      <li>Caches results in-memory for the polling interval to reduce calls.</li>
-      <li>If Binance blocks CORS in your environment, run this code from a simple server-side proxy (see console for errors).</li>
+      <li>Run from a static server (e.g. <code>python -m http.server</code>) to reduce CORS issues.</li>
+      <li>If fetch fails with CORS, run a tiny server-side proxy or use the single-symbol test on a server that can request Binance.</li>
     </ul>
-  </div><script>
-// -------------------------------
-// Config & utilities
-// -------------------------------
-const API_BASE = 'https://fapi.binance.com'; // Binance Futures REST API
+  </div>
+
+<script>
+const API_BASE = 'https://fapi.binance.com';
 const INTERVAL = '15m';
-const KLINES_LIMIT = 60; // number of 15m candles to fetch per symbol
+const KLINES_LIMIT = 60;
+let controller = { running:false };
 
-let controller = { running:false, timer:null };
-
-function sleep(ms){ return new Promise(res=>setTimeout(res,ms)); }
-
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function safeNum(v){ return Number(String(v)); }
 
-// simple rate-limited batch runner
 async function batchMap(items, fn, batchSize=3, delayMs=700){
-  const out = [];
+  const out=[];
   for(let i=0;i<items.length;i+=batchSize){
     const batch = items.slice(i,i+batchSize);
-    const promises = batch.map(x=>fn(x).catch(e=>({__err:e}))); 
+    const promises = batch.map(x=>fn(x).catch(e=>({__err:e.message||String(e)})));
     const res = await Promise.all(promises);
     out.push(...res);
-    // small delay between batches to be gentle on rate limits
     if(i+batchSize < items.length) await sleep(delayMs);
   }
   return out;
 }
 
-// -------------------------------
-// Pattern detection algorithm
-// -------------------------------
-// We look for:
-// 1) A recent local high candle that is red (close < open) with some selling volume (redVol)
-// 2) A subsequent lower low where a green candle occurs whose volume (greenVol) > redVol
-// 3) Optionally, price recovers after that green candle (makes it a valid absorption + reversal)
-
-function detectVolumeBreak(candles){
-  // candles: array of objects {open,high,low,close,volume,openTime}
-  // process last N candles
+// --- detection (now parameterized & relaxed)
+function detectVolumeBreak(candles, volRatio=1.0){
   if(!candles || candles.length < 8) return null;
-  // search for a local high that is red within the first half of the returned candles
-  // we'll evaluate from oldest->newest to find the pattern anywhere in the window
-  for(let i=0;i<candles.length-4;i++){
-    const highC = candles[i];
-    const nextSlice = candles.slice(i+1, i+1+6); // look ahead up to 6 candles
-    // require highC to be red
-    if(safeNum(highC.close) >= safeNum(highC.open)) continue;
-    // find the minimum low in the lookahead and index of that candle
-    let minLow = Infinity, minIdx = -1;
+  // convert to numbers once
+  const c = candles.map(x=>({
+    openTime: x.openTime,
+    open: safeNum(x.open),
+    high: safeNum(x.high),
+    low: safeNum(x.low),
+    close: safeNum(x.close),
+    volume: safeNum(x.volume)
+  }));
+  for(let i=0;i<c.length-4;i++){
+    const highC = c[i];
+    const nextSlice = c.slice(i+1, i+1+6);
+    if(highC.close >= highC.open) continue; // must be red
+    // find min low and index
+    let minLow = Infinity, minIdx=-1;
     for(let j=0;j<nextSlice.length;j++){
-      if(safeNum(nextSlice[j].low) < minLow){ minLow = safeNum(nextSlice[j].low); minIdx = j; }
+      if(nextSlice[j].low < minLow){ minLow = nextSlice[j].low; minIdx = j; }
     }
-    if(minIdx < 0) continue;
+    if(minIdx<0) continue;
     const lowC = nextSlice[minIdx];
-    // require the low candle to be green (close > open)
-    if(safeNum(lowC.close) <= safeNum(lowC.open)) continue;
-    // require green volume > red volume of the high
-    const redVol = safeNum(highC.volume);
-    const greenVol = safeNum(lowC.volume);
-    if(greenVol <= redVol) continue;
-    // optional: ensure lowC.low < highC.low (it is a lower low)
-    if(!(safeNum(lowC.low) < safeNum(highC.low))) continue;
-    // optional: price recovery — after the lowC, in the following 3 candles close > highC.close
+    if(lowC.close <= lowC.open) continue; // low candle must be green
+    // volume condition: greenVol >= redVol * volRatio
+    if(lowC.volume < highC.volume * volRatio) continue;
+    // require lower low (strict)
+    if(!(lowC.low < highC.low)) continue;
+    // optional recovery check (can be off)
     const afterSlice = nextSlice.slice(minIdx+1, minIdx+1+3);
-    const recovered = afterSlice.some(c => safeNum(c.close) > safeNum(highC.close));
-
-    return {
-      found:true,
-      highIndex:i,
-      highCandle:highC,
-      lowIndex:i+1+minIdx,
-      lowCandle:lowC,
-      redVol, greenVol,
-      recovered
-    };
+    const recovered = afterSlice.some(x => x.close > highC.close);
+    return {found:true, highIndex:i, highCandle:highC, lowIndex:i+1+minIdx, lowCandle:lowC, redVol:highC.volume, greenVol:lowC.volume, recovered};
   }
   return null;
 }
 
-// -------------------------------
-// Binance fetch helpers
-// -------------------------------
 async function fetch24hrAll(){
-  const res = await fetch(API_BASE+'/fapi/v1/ticker/24hr');
+  const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr');
   if(!res.ok) throw new Error('24hr fetch failed: '+res.status);
   return res.json();
 }
-
 async function fetchKlines(symbol){
   const url = `${API_BASE}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&limit=${KLINES_LIMIT}`;
   const res = await fetch(url);
   if(!res.ok) throw new Error('klines failed: '+res.status+' for '+symbol);
   const data = await res.json();
-  // map to objects
-  return data.map(c=>({
-    openTime:c[0], open:c[1], high:c[2], low:c[3], close:c[4], volume:c[5]
-  }));
+  return data.map(c=>({openTime:c[0], open:c[1], high:c[2], low:c[3], close:c[4], volume:c[5]}));
 }
 
-// -------------------------------
-// Main scanner
-// -------------------------------
+function setStatus(s){ document.getElementById('status').textContent = s; }
+function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
+
 async function runScan(){
   setStatus('Fetching 24h tickers...');
   let tickers;
-  try{
-    tickers = await fetch24hrAll();
-  }catch(e){
-    console.error(e); setStatus('Error fetching 24hr tickers — see console'); return;
-  }
-  // filter USDT perpetuals and positive 24h change
-  const greenPairs = tickers
-    .filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
+  try{ tickers = await fetch24hrAll(); }
+  catch(e){ console.error(e); setStatus('Error fetching 24hr tickers — see console'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+  // filter USDT and positive change
+  const greenPairs = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
     .filter(t => safeNum(t.priceChangePercent) > 0)
-    .map(t=>({symbol:t.symbol, priceChangePercent:t.priceChangePercent}));
+    .map(t=>({symbol:t.symbol, pct:safeNum(t.priceChangePercent)}));
+  setDebug(`greenPairs=${greenPairs.length} (showing first 8): ${greenPairs.slice(0,8).map(x=>x.symbol).join(', ')}`);
+  if(greenPairs.length===0){ setStatus('No green USDT pairs found'); document.getElementById('matches').innerText = 'No green pairs'; return; }
 
-  if(greenPairs.length === 0){ setStatus('No green USDT pairs found'); return; }
   setStatus(`Found ${greenPairs.length} green USDT pairs — fetching klines in batches`);
-
   const batchSize = Number(document.getElementById('batchSize').value)||3;
-  const delayMs = 650; // gentle between batches
-
+  const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value)||1.0);
+  const delayMs = 650;
   const results = [];
+  let totalFailed=0;
+
   await batchMap(greenPairs, async (p) => {
     try{
       const klines = await fetchKlines(p.symbol);
-      const match = detectVolumeBreak(klines);
-      if(match && match.found){
-        results.push({symbol:p.symbol, pct:p.priceChangePercent, match});
-      }
+      const match = detectVolumeBreak(klines, volRatio);
+      if(match && match.found){ results.push({symbol:p.symbol, pct:p.pct, match}); }
+      else console.debug('no match', p.symbol);
       return true;
     }catch(e){
-      console.warn('failed',p.symbol,e.message);
+      console.warn('failed', p.symbol, e.message);
+      totalFailed++;
       return {symbol:p.symbol,__err:e.message};
     }
   }, batchSize, delayMs);
 
-  // render matches
   const el = document.getElementById('matches');
-  if(results.length === 0){ el.innerHTML = '<div>No matches detected in this scan.</div>'; setStatus('Scan complete — no matches'); return; }
-  el.innerHTML = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedVol</th><th>GreenVol</th><th>Recovered?</th><th>Details</th></tr></thead><tbody>'+
+  if(results.length===0){
+    el.innerHTML = `<div>No matches detected in this scan. (failed fetches: ${totalFailed})</div>`;
+    setStatus('Scan complete — no matches');
+    return;
+  }
+  el.innerHTML = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedVol</th><th>GreenVol</th><th>Recovered?</th></tr></thead><tbody>'+
     results.map(r=>`<tr>
-      <td>${r.symbol}</td>
-      <td>${Number(r.pct).toFixed(2)}%</td>
+      <td>${r.symbol}</td><td>${Number(r.pct).toFixed(2)}%</td>
       <td>${Number(r.match.redVol).toLocaleString()}</td>
       <td class="ok">${Number(r.match.greenVol).toLocaleString()}</td>
       <td>${r.match.recovered?'<span class="ok">Yes</span>':'<span class="warn">No</span>'}</td>
-      <td><button onclick="showDetails('${r.symbol}')">Open</button></td>
-    </tr>`).join('')+
-    '</tbody></table>';
-  // store results for details
+    </tr>`).join('')+'</tbody></table>';
   window._lastMatches = results;
   setStatus('Scan complete — matches: '+results.length);
 }
 
-function showDetails(symbol){
-  const res = (window._lastMatches||[]).find(r=>r.symbol===symbol);
-  if(!res) return alert('No details');
-  const d = res.match;
-  const txt = `Symbol: ${symbol}\n24h%: ${res.pct}\nHigh candle index: ${d.highIndex} (red)\nHigh candle vol: ${d.redVol}\nLow candle index: ${d.lowIndex} (green)\nLow candle vol: ${d.greenVol}\nRecovered after low? ${d.recovered}\n\nOpen console to see chart-ready data.`;
-  alert(txt);
-}
-
-function setStatus(s){ document.getElementById('status').textContent = s; }
-
-// -------------------------------
-// Controls
-// -------------------------------
 document.getElementById('startBtn').addEventListener('click', ()=>{
   if(controller.running) return;
   controller.running = true;
@@ -217,12 +190,10 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   document.getElementById('stopBtn').disabled = false;
   startLoop();
 });
-
 document.getElementById('stopBtn').addEventListener('click', ()=>{
   controller.running = false;
   document.getElementById('startBtn').disabled = false;
   document.getElementById('stopBtn').disabled = true;
-  clearTimeout(controller.timer);
   setStatus('Stopped');
 });
 
@@ -230,14 +201,34 @@ async function startLoop(){
   while(controller.running){
     const poll = Math.max(10, Number(document.getElementById('pollSec').value||60));
     try{ await runScan(); }catch(e){ console.error(e); setStatus('Scan error — see console'); }
-    // cache and wait
     if(!controller.running) break;
     await sleep(poll*1000);
   }
 }
 
-// warn about CORS or network
-window.addEventListener('error', e=>console.error('Runtime error', e));
+// single-symbol test
+document.getElementById('testBtn').addEventListener('click', async ()=>{
+  const s = (document.getElementById('testSymbol').value||'BTCUSDT').trim().toUpperCase();
+  const out = document.getElementById('testOut');
+  const st = document.getElementById('testStatus');
+  st.textContent = 'Fetching klines...';
+  out.textContent = '';
+  try{
+    const k = await fetchKlines(s);
+    st.textContent = 'Running detector...';
+    const vr = Number(document.getElementById('volRatio').value)||1.0;
+    const res = detectVolumeBreak(k, vr);
+    out.textContent = 'Klines fetched: '+k.length + '\\n\\n' + (res?JSON.stringify(res,null,2):'No pattern found');
+    st.textContent = 'Done';
+    console.log('Test symbol klines sample:', k.slice(-12));
+  }catch(e){
+    st.textContent = 'Error';
+    out.textContent = 'Error: '+(e.message||String(e));
+    console.error(e);
+  }
+});
 
-</script></body>
+window.addEventListener('error', e=>console.error('Runtime error', e));
+</script>
+</body>
 </html>

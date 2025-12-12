@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Volume Break Detector — Top-N green + Candle above EMA200 (15m) — 24h red-break (baseVol)</title>
+  <title>Volume Break Detector — require top-24h candle to be RED (15m)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -24,8 +24,8 @@
 </head>
 <body>
   <div class="card">
-    <h1>Volume Break Detector — Top-N green + Candle above EMA200 (15m)</h1>
-    <p>Strict 24h red-break detector (uses base-volume "Vol" from kline index 5): finds the highest base-volume RED candle in the last 24h, looks for the earliest green that breaks that base-volume, and applies your stop/ignore rules.</p>
+    <h1>Volume Break Detector — require top-24h candle to be RED</h1>
+    <p>Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a <strong>red</strong> candle. Then looks for the earliest green that breaks that red's baseVol (strict rules still apply).</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
@@ -165,14 +165,12 @@ async function fetchKlines(symbol){
 }
 
 /* ---------------------------
-   STRICT: 24h highest-baseVol RED -> earliest green-break detector (baseVol)
-   - chooses highest base-volume RED candle in last 24h (ignore green)
-   - earliest later green with baseVol >= red.baseVol * volRatio
-   - if earliestGreen.high < red.high -> STOP / ignore (broken earlier at lower price)
-   - else if earliestGreen.high < dayHigh -> MATCH
-   - else -> ignore (green made new day-high)
+   UPDATED detector:
+   - find the single highest baseVol candle in last 24h (all candles)
+   - require that highest-volume candle is RED; otherwise ignore
+   - if it's red, find earliest later green that breaks its baseVol and apply strict rules
 */
-function detect24hHighestRedBreak_baseVol(klines, volRatio=1.0){
+function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
   if(!klines || klines.length < 100) return null;
   const last24h = klines.slice(-96); // ~24h of 15m candles
   if(last24h.length === 0) return null;
@@ -182,54 +180,55 @@ function detect24hHighestRedBreak_baseVol(klines, volRatio=1.0){
   last24h.forEach(c => { const h = safeNum(c.high); if(h > dayHigh) dayHigh = h; });
 
   // numeric mapping using baseVol
-  const c = last24h.map(x => {
+  const c = last24h.map(x => ({
+    openTime: x.openTime,
+    open: safeNum(x.open),
+    high: safeNum(x.high),
+    low: safeNum(x.low),
+    close: safeNum(x.close),
+    baseVol: safeNum(x.baseVol)
+  }));
+
+  // find the single top-volume candle (overall)
+  let top = { idx: 0, candle: c[0] };
+  for(let i=1;i<c.length;i++){
+    if(c[i].baseVol > top.candle.baseVol) top = { idx:i, candle:c[i] };
+  }
+  const topIdx = top.idx;
+  const topC = top.candle;
+
+  // if the top-volume candle is NOT red -> ignore (we only want top to be red)
+  if(!(topC.close < topC.open)){
     return {
-      openTime: x.openTime,
-      open: safeNum(x.open),
-      high: safeNum(x.high),
-      low: safeNum(x.low),
-      close: safeNum(x.close),
-      baseVol: safeNum(x.baseVol)
+      found: false,
+      reason: 'top_volume_not_red',
+      topIndex24h: topIdx, topCandle: topC,
+      topBaseVol: topC.baseVol,
+      dayHigh
     };
-  });
-
-  // find RED candles
-  const redCandles = [];
-  for(let i=0;i<c.length;i++){
-    if(c[i].close < c[i].open) redCandles.push({idx:i, candle:c[i]});
   }
-  if(redCandles.length === 0) return null;
 
-  // choose red with max baseVol
-  let maxRed = redCandles[0];
-  for(const r of redCandles){
-    if(r.candle.baseVol > maxRed.candle.baseVol) maxRed = r;
-  }
-  const redIdx = maxRed.idx;
-  const redC = maxRed.candle;
-
-  // search earliest later GREEN with baseVol >= red.baseVol * volRatio
+  // top is red -> search earliest later green with baseVol >= top.baseVol * volRatio
   let firstGreen = null;
-  for(let j = redIdx + 1; j < c.length; j++){
+  for(let j = topIdx + 1; j < c.length; j++){
     const later = c[j];
     if(later.close <= later.open) continue; // must be green
-    if(later.baseVol < redC.baseVol * volRatio) continue;
+    if(later.baseVol < topC.baseVol * volRatio) continue;
     firstGreen = { idx: j, candle: later };
     break;
   }
-
   if(!firstGreen) return null;
 
   const g = firstGreen.candle;
 
-  // If earliest green.high < red.high -> stop / ignore
-  if(g.high < redC.high){
+  // If earliest green.high < top.red.high -> STOP / ignore (broken earlier at lower price)
+  if(g.high < topC.high){
     return {
       found: false,
       reason: 'broken_earlier_at_lower_price',
-      redIndex24h: redIdx, redCandle: redC,
+      redIndex24h: topIdx, redCandle: topC,
       greenIndex24h: firstGreen.idx, greenCandle: g,
-      redBaseVol: redC.baseVol, greenBaseVol: g.baseVol,
+      redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
       dayHigh
     };
   }
@@ -239,9 +238,9 @@ function detect24hHighestRedBreak_baseVol(klines, volRatio=1.0){
     return {
       found: false,
       reason: 'green_made_day_high',
-      redIndex24h: redIdx, redCandle: redC,
+      redIndex24h: topIdx, redCandle: topC,
       greenIndex24h: firstGreen.idx, greenCandle: g,
-      redBaseVol: redC.baseVol, greenBaseVol: g.baseVol,
+      redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
       dayHigh
     };
   }
@@ -249,19 +248,19 @@ function detect24hHighestRedBreak_baseVol(klines, volRatio=1.0){
   // match
   return {
     found: true,
-    redIndex24h: redIdx,
-    redCandle: redC,
+    redIndex24h: topIdx,
+    redCandle: topC,
     greenIndex24h: firstGreen.idx,
     greenCandle: g,
-    redBaseVol: redC.baseVol,
+    redBaseVol: topC.baseVol,
     greenBaseVol: g.baseVol,
     dayHigh
   };
 }
 
 /* ---------------------------
-   Notifications
-   --------------------------- */
+   Notifications & helpers (unchanged)
+*/
 async function makeBeep(){
   try{
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -283,28 +282,23 @@ function notifyUser(title, body, symbol){
   matchesEl.prepend(note);
   makeBeep();
 }
-function openSymbol(sym){
-  const url = `https://www.binance.com/en/futures/${sym}`;
-  window.open(url, '_blank');
-}
-function copySym(sym){
-  navigator.clipboard?.writeText(sym).then(()=>alert(sym+' copied to clipboard')).catch(()=>alert('Copy failed'));
-}
+function openSymbol(sym){ window.open(`https://www.binance.com/en/futures/${sym}`, '_blank'); }
+function copySym(sym){ navigator.clipboard?.writeText(sym).then(()=>alert(sym+' copied')).catch(()=>alert('copy failed')); }
 
 /* ---------------------------
-   Two-phase scan: runScan()
-   Uses strict baseVol detector in phase B and counts ignore reasons
-   --------------------------- */
+   Two-phase scan driver (uses the UPDATED detector)
+*/
 function setStatus(s){ document.getElementById('status').textContent = s; }
 function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
 
-async function runScan(){
-  setStatus('Fetching 24h tickers (phase A source list)...');
-  let tickers;
-  try{ tickers = await fetch24hrAll(); }
-  catch(e){ console.error(e); setStatus('Error fetching 24hr tickers — see console'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+// small helper to fetch the 24hr tickers
+async function fetch24hrAll(){ const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr'); if(!res.ok) throw new Error('24hr fetch failed: '+res.status); return res.json(); }
 
-  // phase 0: filter USDT & positive 24h, sort by pct desc, take top N, apply blacklist
+async function runScan(){
+  setStatus('Fetching 24h tickers (phase A list)...');
+  let tickers;
+  try{ tickers = await fetch24hrAll(); }catch(e){ console.error(e); setStatus('24hr fetch error'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+
   const topN = Math.max(1, Math.min(200, Number(document.getElementById('topN').value || 30)));
   const greenPairsAll = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
     .filter(t => safeNum(t.priceChangePercent) > 0)
@@ -315,79 +309,55 @@ async function runScan(){
   const filteredCount = topCandidates.length - topAfterBlacklist.length;
   document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered — ${filteredCount} removed from top${topN}`;
   document.getElementById('topInfo').textContent = `Top-N selected: ${topCandidates.length} (after blacklist: ${topAfterBlacklist.length})`;
-  setDebug(`topCandidates=${topCandidates.length} (showing first 8): ${topCandidates.slice(0,8).map(x=>x.symbol).join(', ')}`);
-  if(topAfterBlacklist.length === 0){ setStatus('No top-N green USDT pairs (after blacklist)'); document.getElementById('matches').innerText='No top-N pairs'; return; }
+  setDebug(`topCandidates=${topCandidates.length} (first 8): ${topCandidates.slice(0,8).map(x=>x.symbol).join(', ')}`);
+  if(topAfterBlacklist.length === 0){ setStatus('No top-N green pairs'); document.getElementById('matches').innerText='No top-N pairs'; return; }
 
-  // phase A: fetch klines for topAfterBlacklist in batches and compute last-close > EMA200 — collect EMA-OK symbols + store klines
-  setStatus('Phase A: fetching klines & checking last-close > EMA200 (this may take a while)...');
+  setStatus('Phase A: fetch klines & EMA200 filter...');
   const batchSize = Number(document.getElementById('batchSize').value) || 3;
   const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
 
   const emaOkSymbols = [];
-  const klinesMap = {}; // symbol -> klines array
+  const klinesMap = {};
   let fetchFailed = 0;
 
   await batchMap(topAfterBlacklist, async (p) => {
     try{
       const kl = await fetchKlines(p.symbol);
       const emaOk = isLastCloseAboveEMA200(kl);
-      if(emaOk){
-        emaOkSymbols.push({symbol:p.symbol, pct:p.pct});
-        klinesMap[p.symbol] = kl;
-      }
+      if(emaOk){ emaOkSymbols.push({symbol:p.symbol, pct:p.pct}); klinesMap[p.symbol] = kl; }
       return true;
-    }catch(e){
-      console.warn('fetch failed (phase A):', p.symbol, e.message);
-      fetchFailed++;
-      return {symbol:p.symbol,__err:e.message};
-    }
+    }catch(e){ console.warn('fetch failed', p.symbol, e.message); fetchFailed++; return {symbol:p.symbol,__err:e.message}; }
   }, batchSize, 700);
 
   setDebug(`EMA-OK count: ${emaOkSymbols.length}`);
-  document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} symbols (last close > EMA200) — fetch failed: ${fetchFailed}`;
+  document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} (last close > EMA200) — fetch failed: ${fetchFailed}`;
   document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
 
-  if(emaOkSymbols.length === 0){
-    setStatus('Phase A complete — no EMA-OK symbols');
-    document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected in this scan. (fetch failed: ${fetchFailed})</div>`;
-    return;
-  }
+  if(emaOkSymbols.length === 0){ setStatus('No EMA-OK'); document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected (fetch failed: ${fetchFailed})</div>`; return; }
 
-  // phase B: run the strict 24h-highest-red-break detector only on EMA-OK symbols (use klinesMap)
-  setStatus(`Phase B: checking 24h red-break on ${emaOkSymbols.length} EMA-OK symbols`);
+  setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
   const results = [];
-  let brokenAtLowerCount = 0;
-  let greenMadeDayHighCount = 0;
+  let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0 };
 
   for(const p of emaOkSymbols){
     try{
       const kl = klinesMap[p.symbol];
-      const match = detect24hHighestRedBreak_baseVol(kl, volRatio);
-      if(match && match.found){
-        results.push({symbol:p.symbol, pct:p.pct, match});
-      }else if(match && match.reason === 'broken_earlier_at_lower_price'){
-        brokenAtLowerCount++;
-        console.debug('ignored-broken-lower', p.symbol, match);
-      }else if(match && match.reason === 'green_made_day_high'){
-        greenMadeDayHighCount++;
-        console.debug('ignored-green-made-day-high', p.symbol, match);
-      }else{
-        console.debug('no 24h-red-break (phase B):', p.symbol);
-      }
-    }catch(e){
-      console.warn('phase B failed for', p.symbol, e.message);
-    }
+      const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+      if(match && match.found){ results.push({symbol:p.symbol, pct:p.pct, match}); }
+      else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; }
+      else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; }
+      else if(match && match.reason === 'green_made_day_high'){ counts.greenDayHigh++; }
+    }catch(e){ console.warn('phase B failed for', p.symbol, e.message); }
   }
 
   const el = document.getElementById('matches');
   if(results.length === 0){
-    el.innerHTML = `<div>No matches detected in this scan (phase B). EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>
-      <div style="margin-top:8px;color:#9fb3cc">Ignored because broken at lower price: ${brokenAtLowerCount} — Ignored (green made day-high): ${greenMadeDayHighCount}</div>`;
+    el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>
+      <div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh}</div>`;
     setStatus('Scan complete — no matches');
     return;
   }
 
-  // render matches + notify
   let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
   for(const r of results){
     const m = r.match;
@@ -403,56 +373,31 @@ async function runScan(){
       <td>${fmtPrice(m.dayHigh)}</td>
       <td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td>
     </tr>`;
-    const body = `24h highest red baseVol ${fmt(m.redBaseVol)} — green baseVol ${fmt(m.greenBaseVol)} (green.high < dayHigh)`;
-    notifyUser('24h Red-Vol Break: '+r.symbol, body, r.symbol);
-    if(document.getElementById('autoOpen').checked){
-      try{ openSymbol(r.symbol); }catch(e){ console.warn('auto-open failed', e); }
-    }
+    notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)}`, r.symbol);
   }
   html += '</tbody></table>';
-  html += `<div style="margin-top:8px;color:#9fb3cc">Ignored because broken at lower price: ${brokenAtLowerCount} — Ignored (green made day-high): ${greenMadeDayHighCount}</div>`;
+  html += `<div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh}</div>`;
   el.innerHTML = html;
   window._lastMatches = results;
   setStatus('Scan complete — matches: '+results.length);
 }
 
-/* ---------------------------
-   Helpers to convert the last24 index back to real openTime for display
-*/
+/* helpers to map last24 index to absolute openTime using the stored klines */
 function last24IndexToAbsTime(idx24, fullKlines){
   try{
-    const full = fullKlines || [];
-    const offset = Math.max(0, full.length - 96);
+    const offset = Math.max(0, fullKlines.length - 96);
     const pos = offset + idx24;
-    return full[pos] ? full[pos].openTime : null;
+    return fullKlines[pos] ? fullKlines[pos].openTime : null;
   }catch(e){ return null; }
 }
 
 /* ---------------------------
-   fetch24hrAll helper
-   --------------------------- */
-async function fetch24hrAll(){
-  const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr');
-  if(!res.ok) throw new Error('24hr fetch failed: '+res.status);
-  return res.json();
-}
-
-/* ---------------------------
    Controls & test + blacklist update
-   --------------------------- */
+*/
 document.getElementById('startBtn').addEventListener('click', ()=>{
-  if(controller.running) return;
-  controller.running = true;
-  document.getElementById('startBtn').disabled = true;
-  document.getElementById('stopBtn').disabled = false;
-  startLoop();
+  if(controller.running) return; controller.running = true; document.getElementById('startBtn').disabled = true; document.getElementById('stopBtn').disabled = false; startLoop();
 });
-document.getElementById('stopBtn').addEventListener('click', ()=>{
-  controller.running = false;
-  document.getElementById('startBtn').disabled = false;
-  document.getElementById('stopBtn').disabled = true;
-  setStatus('Stopped');
-});
+document.getElementById('stopBtn').addEventListener('click', ()=>{ controller.running = false; document.getElementById('startBtn').disabled = false; document.getElementById('stopBtn').disabled = true; setStatus('Stopped'); });
 
 async function startLoop(){
   if(window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied'){
@@ -467,30 +412,22 @@ async function startLoop(){
   }
 }
 
-// single-symbol test (shows baseVol-aware check)
 document.getElementById('testBtn').addEventListener('click', async ()=>{
   const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
-  const out = document.getElementById('testOut');
-  const st = document.getElementById('testStatus');
-  st.textContent = 'Fetching klines...';
-  out.textContent = '';
+  const out = document.getElementById('testOut'); const st = document.getElementById('testStatus');
+  st.textContent = 'Fetching klines...'; out.textContent = '';
   try{
     const k = await fetchKlines(s);
-    st.textContent = 'Checking last-close > EMA200 & 24h red-break (baseVol strict)...';
+    st.textContent = 'Checking last-close > EMA200 & top-24h-topvol-is-red...';
     const emaOk = isLastCloseAboveEMA200(k);
     const vr = Number(document.getElementById('volRatio').value) || 1.0;
-    const match = detect24hHighestRedBreak_baseVol(k, vr);
-    out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\n24h red-break result:\n${match ? JSON.stringify(match, null, 2) : 'No pattern / insufficient data'}`;
+    const match = detect24hTopVolMustBeRed_thenBreak_baseVol(k, vr);
+    out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\nResult:\n${match ? JSON.stringify(match, null, 2) : 'No pattern / insufficient data'}`;
     st.textContent = 'Done';
     console.log('Test klines sample:', k.slice(-24));
-  }catch(e){
-    st.textContent = 'Error';
-    out.textContent = 'Error: ' + (e.message || String(e));
-    console.error(e);
-  }
+  }catch(e){ st.textContent = 'Error'; out.textContent = 'Error: ' + (e.message || String(e)); console.error(e); }
 });
 
-// update blacklist
 document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
   const text = document.getElementById('blacklistArea').value || '';
   const lines = text.split(/\r?\n/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -499,9 +436,6 @@ document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
   alert('Blacklist updated — ' + blacklist.length + ' symbols');
 });
 
-/* ---------------------------
-   Expose utilities + error logging
-   --------------------------- */
 window.openSymbol = openSymbol;
 window.copySym = copySym;
 window.addEventListener('error', e=>console.error('Runtime error', e));

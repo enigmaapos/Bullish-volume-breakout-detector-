@@ -127,10 +127,6 @@
     /* Accessibility focus */
     .pill:focus,.pill:hover{outline:none;border-color:rgba(255,255,255,.12)}
     button:focus{outline:2px solid rgba(45,212,191,.12)}
-
-    /* small meta row */
-    .meta-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
-    .meta-item{color:var(--muted)}
   </style>
 </head>
 <body>
@@ -150,12 +146,6 @@
           <button id="stopBtn" disabled>Stop</button>
         </div>
         <div style="display:flex;align-items:center"><small id="status">Idle</small></div>
-      </div>
-
-      <div class="meta-row">
-        <div class="meta-item"><strong>Last updated:</strong> <span id="lastUpdated">—</span></div>
-        <div class="meta-item"><strong>Next run:</strong> <span id="nextRun">—</span></div>
-        <div class="meta-item"><strong>Countdown:</strong> <span id="nextCountdown">—</span></div>
       </div>
 
       <div class="debug" id="debugLine">Debug: —</div>
@@ -410,37 +400,7 @@
     function openSymbol(sym){ window.open(`https://www.binance.com/en/futures/${sym}`, '_blank'); }
     function copySym(sym){ navigator.clipboard?.writeText(sym).then(()=>alert(sym+' copied')).catch(()=>alert('copy failed')); }
 
-    // Next-run countdown handling
-    let nextRunTime = null;
-    let countdownInterval = null;
-    function setLastUpdated(ts){
-      const el = document.getElementById('lastUpdated');
-      el.textContent = ts ? new Date(ts).toLocaleString() : '—';
-    }
-    function setNextRun(msEpoch){
-      nextRunTime = msEpoch;
-      const nextRunEl = document.getElementById('nextRun');
-      if(!msEpoch){ nextRunEl.textContent = '—'; clearCountdown(); document.getElementById('nextCountdown').textContent = '—'; return; }
-      nextRunEl.textContent = new Date(msEpoch).toLocaleString();
-      startCountdown();
-    }
-    function startCountdown(){
-      clearCountdown();
-      countdownInterval = setInterval(()=> {
-        if(!nextRunTime){ clearCountdown(); document.getElementById('nextCountdown').textContent = '—'; return; }
-        const diff = Math.max(0, nextRunTime - Date.now());
-        const s = Math.ceil(diff/1000);
-        const min = Math.floor(s/60);
-        const sec = s % 60;
-        document.getElementById('nextCountdown').textContent = (min>0? (min+'m ') : '') + sec + 's';
-        if(diff <= 0){
-          document.getElementById('nextCountdown').textContent = '0s';
-        }
-      }, 1000);
-    }
-    function clearCountdown(){ if(countdownInterval){ clearInterval(countdownInterval); countdownInterval = null; } }
-
-    // main scan driver (keeps the same behavior) with next-run hooks
+    // main scan driver (keeps the same behavior)
     function setStatus(s){ document.getElementById('status').textContent = s; }
     function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
 
@@ -485,7 +445,7 @@
       document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} (last close > EMA200) — fetch failed: ${fetchFailed}`;
       document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
 
-      if(emaOkSymbols.length === 0){ setStatus('No EMA-OK'); document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected (fetch failed: ${fetchFailed})</div>`; setLastUpdated(Date.now()); return; }
+      if(emaOkSymbols.length === 0){ setStatus('No EMA-OK'); document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected (fetch failed: ${fetchFailed})</div>`; return; }
 
       setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
       const results = [];
@@ -494,7 +454,7 @@
       const topVolRedSymbols = [];
       const topNotRedSymbols = [];
       const greenDayHighSymbols = [];
-      const noBreakerSymbols = {};
+      const noBreakerSymbols = [];
 
       for(const p of emaOkSymbols){
         try{
@@ -530,7 +490,6 @@
       if(results.length === 0){
         el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
         document.getElementById('matchSummary').textContent = `0 matches`;
-        setLastUpdated(Date.now());
         setStatus('Scan complete — no matches');
         return;
       }
@@ -557,7 +516,6 @@
       el.innerHTML = html;
       window._lastMatches = results;
       document.getElementById('matchSummary').textContent = `${results.length} matches`;
-      setLastUpdated(Date.now());
       setStatus('Scan complete — matches: '+results.length);
     }
 
@@ -573,7 +531,7 @@
     document.getElementById('startBtn').addEventListener('click', ()=>{
       if(controller.running) return; controller.running = true; document.getElementById('startBtn').disabled = true; document.getElementById('stopBtn').disabled = false; startLoop();
     });
-    document.getElementById('stopBtn').addEventListener('click', ()=>{ controller.running = false; document.getElementById('startBtn').disabled = false; document.getElementById('stopBtn').disabled = true; setStatus('Stopped'); setNextRun(null); });
+    document.getElementById('stopBtn').addEventListener('click', ()=>{ controller.running = false; document.getElementById('startBtn').disabled = false; document.getElementById('stopBtn').disabled = true; setStatus('Stopped'); });
 
     async function startLoop(){
       if(window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied'){
@@ -581,21 +539,11 @@
       }
       setStatus('Scanner running');
       while(controller.running){
-        // compute poll and set nextRun to show countdown while runScan executes
-        const poll = Math.max(10, Number(document.getElementById('pollSec').value || 60));
-        // show next run approximately after poll seconds (will be updated after runScan finishes)
-        setNextRun(Date.now() + poll*1000);
         try{ await runScan(); }catch(e){ console.error('scan error', e); setStatus('Scan error — see console'); }
-        setLastUpdated(Date.now());
         if(!controller.running) break;
-        // schedule actual next run time and start countdown
-        const nextAt = Date.now() + poll*1000;
-        setNextRun(nextAt);
+        const poll = Math.max(10, Number(document.getElementById('pollSec').value || 60));
         await sleep(poll * 1000);
       }
-      // cleanup
-      setNextRun(null);
-      clearCountdown();
     }
 
     document.getElementById('testBtn').addEventListener('click', async ()=>{

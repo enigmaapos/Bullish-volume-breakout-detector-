@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Auto Volume Break Scanner — Binance Futures (15m)</title>
+  <title>Binance Futures — Volume Break Detector + EMA70/200 Filter (15m)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -20,14 +20,12 @@
     pre{white-space:pre-wrap; max-height:220px; overflow:auto}
     .debug{font-size:13px;color:#9fb3cc;margin-top:8px}
     .notify{padding:8px;border-radius:6px;background:#072a1d;color:#bff3e8;margin-bottom:8px}
-    .spinner{display:inline-block;border:3px solid rgba(255,255,255,0.06);border-left-color:#2dd4bf;border-radius:50%;width:14px;height:14px;animation:spin 1s linear infinite;vertical-align:middle;margin-right:6px}
-    @keyframes spin{to{transform:rotate(360deg)}}
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>Auto Volume Break Scanner — Binance Futures (15m)</h1>
-    <p>Auto-scans USDT perpetual pairs with positive 24h change for the <strong>red-high → green-lower-low (greenVol &gt;= redVol * volRatio)</strong> pattern.</p>
+    <h1>Volume Break Detector + EMA70/200 Filter — Binance Futures (15m)</h1>
+    <p>Scans USDT perpetuals (24h &gt; 0) and only reports symbols where <strong>EMA70 has just crossed above EMA200</strong> (bullish cross). Then checks the red-high → green-lower-low volume-break pattern.</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
@@ -40,11 +38,11 @@
     </div>
 
     <div class="debug" id="debugLine">Debug: —</div>
-    <div style="margin-top:8px"><small>Auto-start enabled on load.</small></div>
+    <div style="margin-top:8px"><small>Auto-start disabled — press Start to run.</small></div>
   </div>
 
   <div class="card">
-    <h2>Matches (live)</h2>
+    <h2>Matches</h2>
     <div id="matches">No results yet</div>
   </div>
 
@@ -61,9 +59,8 @@
   <div class="card">
     <h2>Notes</h2>
     <ul>
-      <li>Run from a static server (e.g. <code>python -m http.server</code>) to reduce CORS issues.</li>
-      <li>If you hit fetch/CORS issues, use a tiny server proxy (Node/Express) to avoid browser CORS limits.</li>
-      <li>Be gentle with polling and batch size to avoid public API rate limits.</li>
+      <li>Run from a static server (e.g. <code>python -m http.server</code>) to reduce CORS issues, or use the Node proxy described previously.</li>
+      <li>Fetching 300 klines per symbol increases bandwidth; keep batchSize small (2–4) and polling ≥ 30s to avoid rate limits.</li>
     </ul>
   </div>
 
@@ -73,7 +70,7 @@
    --------------------------- */
 const API_BASE = 'https://fapi.binance.com';
 const INTERVAL = '15m';
-const KLINES_LIMIT = 60;
+const KLINES_LIMIT = 300; // increased so EMA200 can be computed reliably
 let controller = { running:false };
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
@@ -92,10 +89,48 @@ async function batchMap(items, fn, batchSize=3, delayMs=700){
 }
 
 /* ---------------------------
+   EMA helpers
+   --------------------------- */
+// calcEMA(period, prices) -> returns array of ema values (same length), first values will match simple SMA seed then EMA applied
+function calcEMA(period, prices){
+  const k = 2 / (period + 1);
+  const out = new Array(prices.length).fill(null);
+  if(prices.length === 0) return out;
+  // seed with SMA of first period
+  let seedSum = 0;
+  const seedCount = Math.min(period, prices.length);
+  for(let i=0;i<seedCount;i++) seedSum += prices[i];
+  out[seedCount-1] = seedSum / seedCount;
+  // forward compute EMA
+  for(let i=seedCount;i<prices.length;i++){
+    out[i] = (prices[i] - out[i-1]) * k + out[i-1];
+  }
+  return out;
+}
+
+// returns true if EMA70 crossed above EMA200 between previous and last candle
+function isBullishEMACross(klines){
+  // need closes as numbers
+  const closes = klines.map(k => safeNum(k.close));
+  if(closes.length < 210) return false; // not enough data
+  const ema70 = calcEMA(70, closes);
+  const ema200 = calcEMA(200, closes);
+  const len = closes.length;
+  const prevIdx = len - 2;
+  const lastIdx = len - 1;
+  const prev70 = ema70[prevIdx], prev200 = ema200[prevIdx];
+  const last70 = ema70[lastIdx], last200 = ema200[lastIdx];
+  if(prev70 == null || prev200 == null || last70 == null || last200 == null) return false;
+  // bullish cross: prev70 <= prev200 AND last70 > last200
+  return (prev70 <= prev200) && (last70 > last200);
+}
+
+/* ---------------------------
    Detection algorithm
    --------------------------- */
 function detectVolumeBreak(candles, volRatio=1.0){
   if(!candles || candles.length < 8) return null;
+  // convert to numbers once
   const c = candles.map(x=>({
     openTime: x.openTime,
     open: safeNum(x.open),
@@ -108,16 +143,19 @@ function detectVolumeBreak(candles, volRatio=1.0){
     const highC = c[i];
     const nextSlice = c.slice(i+1, i+1+6);
     if(highC.close >= highC.open) continue; // must be red
-    // find min low and index inside nextSlice
+    // find min low and index
     let minLow = Infinity, minIdx=-1;
     for(let j=0;j<nextSlice.length;j++){
       if(nextSlice[j].low < minLow){ minLow = nextSlice[j].low; minIdx = j; }
     }
-    if(minIdx < 0) continue;
+    if(minIdx<0) continue;
     const lowC = nextSlice[minIdx];
-    if(lowC.close <= lowC.open) continue; // low must be green
-    if(lowC.volume < highC.volume * volRatio) continue; // volume condition
-    if(!(lowC.low < highC.low)) continue; // lower low required
+    if(lowC.close <= lowC.open) continue; // low candle must be green
+    // volume condition: greenVol >= redVol * volRatio
+    if(lowC.volume < highC.volume * volRatio) continue;
+    // require lower low (strict)
+    if(!(lowC.low < highC.low)) continue;
+    // optional recovery check (can be off)
     const afterSlice = nextSlice.slice(minIdx+1, minIdx+1+3);
     const recovered = afterSlice.some(x => x.close > highC.close);
     return {found:true, highIndex:i, highCandle:highC, lowIndex:i+1+minIdx, lowCandle:lowC, redVol:highC.volume, greenVol:lowC.volume, recovered};
@@ -158,22 +196,18 @@ async function makeBeep(){
   }catch(e){ console.warn('beep failed', e); }
 }
 function notifyUser(title, body, symbol){
-  // Desktop notification
   if(window.Notification && Notification.permission === 'granted'){
     const n = new Notification(title, { body });
     n.onclick = ()=>{ window.focus(); openSymbol(symbol); };
   }
-  // Visual highlight in page
   const matchesEl = document.getElementById('matches');
   const note = document.createElement('div');
   note.className = 'notify';
   note.innerHTML = `<strong>${title}</strong> — ${body} <div style="margin-top:6px"><button onclick="openSymbol('${symbol}')">Open on Binance</button> <button onclick="copySym('${symbol}')">Copy</button></div>`;
   matchesEl.prepend(note);
-  // beep
   makeBeep();
 }
 function openSymbol(sym){
-  // open Binance Futures symbol page (may open US region differently)
   const url = `https://www.binance.com/en/futures/${sym}`;
   window.open(url, '_blank');
 }
@@ -187,29 +221,40 @@ function copySym(sym){
 function setStatus(s){ document.getElementById('status').textContent = s; }
 function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
 
-async function runScanOnce(){
+async function runScan(){
   setStatus('Fetching 24h tickers...');
   let tickers;
   try{ tickers = await fetch24hrAll(); }
-  catch(e){ console.error(e); setStatus('24hr fetch error — see console'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+  catch(e){ console.error(e); setStatus('Error fetching 24hr tickers — see console'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+  // filter USDT pairs with positive 24h change
   const greenPairs = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
     .filter(t => safeNum(t.priceChangePercent) > 0)
     .map(t=>({symbol:t.symbol, pct:safeNum(t.priceChangePercent)}));
   setDebug(`greenPairs=${greenPairs.length} (first 8): ${greenPairs.slice(0,8).map(x=>x.symbol).join(', ')}`);
   if(greenPairs.length === 0){ setStatus('No green USDT pairs'); document.getElementById('matches').innerText='No green pairs'; return; }
 
-  setStatus(`Found ${greenPairs.length} green USDT pairs — fetching klines`);
+  setStatus(`Found ${greenPairs.length} green USDT pairs — fetching klines & checking EMA cross`);
   const batchSize = Number(document.getElementById('batchSize').value) || 3;
   const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
   const results = [];
   let totalFailed = 0;
+  let checkedEMA = 0;
 
   await batchMap(greenPairs, async (p) => {
     try{
       const klines = await fetchKlines(p.symbol);
-      const match = detectVolumeBreak(klines, volRatio);
+      // check EMA70/EMA200 bullish cross first
+      const bullishCross = isBullishEMACross(klines);
+      if(!bullishCross){
+        console.debug('ema cross not present', p.symbol);
+        return true;
+      }
+      checkedEMA++;
+      // run volume-break detection on a window of the most recent 80-120 candles to speed up detection
+      const windowCandles = klines.slice(-120); // last 120 candles should be enough for pattern search
+      const match = detectVolumeBreak(windowCandles, volRatio);
       if(match && match.found){ results.push({symbol:p.symbol, pct:p.pct, match}); }
-      else console.debug('no match', p.symbol);
+      else console.debug('no match after ema ok', p.symbol);
       return true;
     }catch(e){
       console.warn('failed', p.symbol, e.message);
@@ -220,19 +265,17 @@ async function runScanOnce(){
 
   const el = document.getElementById('matches');
   if(results.length === 0){
-    el.innerHTML = `<div>No matches detected in this scan. (failed fetches: ${totalFailed})</div>`;
+    el.innerHTML = `<div>No matches detected in this scan. (failed fetches: ${totalFailed}) — EMA-OK checked: ${checkedEMA}</div>`;
     setStatus('Scan complete — no matches');
     return;
   }
 
-  // render table + notify for each match
+  // render matches + notify
   let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedVol</th><th>GreenVol</th><th>Recovered?</th><th>Actions</th></tr></thead><tbody>';
   for(const r of results){
     html += `<tr class="match-row"><td>${r.symbol}</td><td>${Number(r.pct).toFixed(2)}%</td><td>${Number(r.match.redVol).toLocaleString()}</td><td class="ok">${Number(r.match.greenVol).toLocaleString()}</td><td>${r.match.recovered?'<span class="ok">Yes</span>':'<span class="warn">No</span>'}</td><td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td></tr>`;
-    // notify once per symbol
-    const body = `greenVol ${Number(r.match.greenVol).toLocaleString()} > redVol ${Number(r.match.redVol).toLocaleString()}`;
-    notifyUser('Volume Break Detected: '+r.symbol, body, r.symbol);
-    // optional auto-open
+    const body = `EMA70 crossed EMA200 (bullish) — greenVol ${Number(r.match.greenVol).toLocaleString()} > redVol ${Number(r.match.redVol).toLocaleString()}`;
+    notifyUser('Volume Break + EMA Cross: '+r.symbol, body, r.symbol);
     if(document.getElementById('autoOpen').checked){
       try{ openSymbol(r.symbol); }catch(e){ console.warn('auto-open failed', e); }
     }
@@ -244,7 +287,7 @@ async function runScanOnce(){
 }
 
 /* ---------------------------
-   Controls + auto-start
+   Controls
    --------------------------- */
 document.getElementById('startBtn').addEventListener('click', ()=>{
   if(controller.running) return;
@@ -261,18 +304,12 @@ document.getElementById('stopBtn').addEventListener('click', ()=>{
 });
 
 async function startLoop(){
-  // request notification permission once
   if(window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied'){
     try{ await Notification.requestPermission(); }catch(e){ console.warn('notification request failed', e); }
   }
   setStatus('Scanner running');
   while(controller.running){
-    try{
-      await runScanOnce();
-    }catch(e){
-      console.error('scan error', e);
-      setStatus('Scan error — see console');
-    }
+    try{ await runScan(); }catch(e){ console.error('scan error', e); setStatus('Scan error — see console'); }
     if(!controller.running) break;
     const poll = Math.max(10, Number(document.getElementById('pollSec').value || 60));
     await sleep(poll * 1000);
@@ -280,7 +317,7 @@ async function startLoop(){
 }
 
 /* ---------------------------
-   Single-symbol test
+   Single-symbol test (shows EMA cross and detection)
    --------------------------- */
 document.getElementById('testBtn').addEventListener('click', async ()=>{
   const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
@@ -290,37 +327,19 @@ document.getElementById('testBtn').addEventListener('click', async ()=>{
   out.textContent = '';
   try{
     const k = await fetchKlines(s);
-    st.textContent = 'Running detector...';
+    st.textContent = 'Checking EMA cross...';
+    const emaOk = isBullishEMACross(k);
     const vr = Number(document.getElementById('volRatio').value) || 1.0;
-    const res = detectVolumeBreak(k, vr);
-    out.textContent = 'Klines fetched: ' + k.length + '\\n\\n' + (res?JSON.stringify(res,null,2):'No pattern found');
+    const match = detectVolumeBreak(k.slice(-120), vr);
+    out.textContent = `Klines fetched: ${k.length}\nEMA70->EMA200 bullish cross: ${emaOk}\n\nPattern match:\n${match ? JSON.stringify(match, null, 2) : 'No pattern found'}`;
     st.textContent = 'Done';
-    console.log('Test klines sample:', k.slice(-12));
+    console.log('Test klines sample:', k.slice(-24));
   }catch(e){
     st.textContent = 'Error';
     out.textContent = 'Error: ' + (e.message || String(e));
     console.error(e);
   }
 });
-
-/* ---------------------------
-   Auto-start scanning on load (you can disable by setting autoStart=false)
-   --------------------------- */
-const autoStart = true;
-window.addEventListener('load', ()=>{
-  if(autoStart){
-    // small delay to let UI render and user cancel if wanted
-    setTimeout(()=>{
-      if(!controller.running){
-        document.getElementById('startBtn').click();
-      }
-    }, 900);
-  }
-});
-
-// expose helpers to global for buttons created dynamically
-window.openSymbol = openSymbol;
-window.copySym = copySym;
 
 window.addEventListener('error', e=>console.error('Runtime error', e));
 </script>

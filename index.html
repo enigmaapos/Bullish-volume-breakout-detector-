@@ -20,12 +20,14 @@
     pre{white-space:pre-wrap; max-height:220px; overflow:auto}
     .debug{font-size:13px;color:#9fb3cc;margin-top:8px}
     .notify{padding:8px;border-radius:6px;background:#072a1d;color:#bff3e8;margin-bottom:8px}
+    .list-inline{display:flex;gap:6px;flex-wrap:wrap}
+    .pill{background:#071722;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.03)}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Volume Break Detector — require top-24h candle to be RED</h1>
-    <p>Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a <strong>red</strong> candle. Then looks for the earliest green that breaks that red's baseVol (strict rules still apply).</p>
+    <p>Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a <strong>red</strong> candle. Then looks for the earliest green that breaks that red's baseVol. This version counts how many top-N pairs have that red which is later <em>broken by a green at a lower price</em> (the "broken-lower" case).</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
@@ -166,18 +168,23 @@ async function fetchKlines(symbol){
 
 /* ---------------------------
    UPDATED detector:
-   - find the single highest baseVol candle in last 24h (all candles)
-   - require that highest-volume candle is RED; otherwise ignore
-   - if it's red, find earliest later green that breaks its baseVol and apply strict rules
+   - uses baseVol
+   - returns reason 'broken_earlier_at_lower_price' for the case you asked
+   - also returns redCount24h
 */
 function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
   if(!klines || klines.length < 100) return null;
   const last24h = klines.slice(-96); // ~24h of 15m candles
   if(last24h.length === 0) return null;
 
-  // compute day high (within last24h)
+  // compute day high (within last24h) and red count
   let dayHigh = -Infinity;
-  last24h.forEach(c => { const h = safeNum(c.high); if(h > dayHigh) dayHigh = h; });
+  let redCount = 0;
+  last24h.forEach(c => {
+    const h = safeNum(c.high);
+    if(h > dayHigh) dayHigh = h;
+    if(safeNum(c.close) < safeNum(c.open)) redCount++;
+  });
 
   // numeric mapping using baseVol
   const c = last24h.map(x => ({
@@ -204,7 +211,8 @@ function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
       reason: 'top_volume_not_red',
       topIndex24h: topIdx, topCandle: topC,
       topBaseVol: topC.baseVol,
-      dayHigh
+      dayHigh,
+      redCount24h: redCount
     };
   }
 
@@ -217,7 +225,12 @@ function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
     firstGreen = { idx: j, candle: later };
     break;
   }
-  if(!firstGreen) return null;
+  if(!firstGreen) return {
+    found: false,
+    reason: 'no_later_green_breaker',
+    redCount24h: redCount,
+    topIndex24h: topIdx, topCandle: topC, topBaseVol: topC.baseVol, dayHigh
+  };
 
   const g = firstGreen.candle;
 
@@ -229,7 +242,8 @@ function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
       redIndex24h: topIdx, redCandle: topC,
       greenIndex24h: firstGreen.idx, greenCandle: g,
       redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
-      dayHigh
+      dayHigh,
+      redCount24h: redCount
     };
   }
 
@@ -241,7 +255,8 @@ function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
       redIndex24h: topIdx, redCandle: topC,
       greenIndex24h: firstGreen.idx, greenCandle: g,
       redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
-      dayHigh
+      dayHigh,
+      redCount24h: redCount
     };
   }
 
@@ -254,7 +269,8 @@ function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
     greenCandle: g,
     redBaseVol: topC.baseVol,
     greenBaseVol: g.baseVol,
-    dayHigh
+    dayHigh,
+    redCount24h: redCount
   };
 }
 
@@ -291,7 +307,6 @@ function copySym(sym){ navigator.clipboard?.writeText(sym).then(()=>alert(sym+' 
 function setStatus(s){ document.getElementById('status').textContent = s; }
 function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
 
-// small helper to fetch the 24hr tickers
 async function fetch24hrAll(){ const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr'); if(!res.ok) throw new Error('24hr fetch failed: '+res.status); return res.json(); }
 
 async function runScan(){
@@ -337,33 +352,38 @@ async function runScan(){
 
   setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
   const results = [];
-  let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0 };
+  let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0, noBreaker:0 };
+  const brokenLowerSymbols = [];
 
   for(const p of emaOkSymbols){
     try{
       const kl = klinesMap[p.symbol];
       const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
-      if(match && match.found){ results.push({symbol:p.symbol, pct:p.pct, match}); }
-      else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; }
-      else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; }
+      if(match && match.found){
+        results.push({symbol:p.symbol, pct:p.pct, match});
+      }else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; }
+      else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; brokenLowerSymbols.push(p.symbol); }
       else if(match && match.reason === 'green_made_day_high'){ counts.greenDayHigh++; }
+      else if(match && match.reason === 'no_later_green_breaker'){ counts.noBreaker++; }
     }catch(e){ console.warn('phase B failed for', p.symbol, e.message); }
   }
 
   const el = document.getElementById('matches');
   if(results.length === 0){
     el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>
-      <div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh}</div>`;
+      <div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh} — no-breaker: ${counts.noBreaker}</div>
+      <div style="margin-top:8px;color:#9fb3cc">Broken-lower symbols (${counts.brokenLower}): <div class="list-inline">${brokenLowerSymbols.map(s=>`<span class="pill">${s}</span>`).join('')}</div></div>`;
     setStatus('Scan complete — no matches');
     return;
   }
 
-  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedCount(24h)</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
   for(const r of results){
     const m = r.match;
     html += `<tr class="match-row">
       <td>${r.symbol}</td>
       <td>${Number(r.pct).toFixed(2)}%</td>
+      <td>${m.redCount24h ?? '-'}</td>
       <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
       <td>${fmt(m.redBaseVol)}</td>
       <td>${fmtPrice(m.redCandle.high)}</td>
@@ -373,10 +393,11 @@ async function runScan(){
       <td>${fmtPrice(m.dayHigh)}</td>
       <td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td>
     </tr>`;
-    notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)}`, r.symbol);
+    notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)} — redCount24h: ${m.redCount24h}`, r.symbol);
   }
   html += '</tbody></table>';
-  html += `<div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh}</div>`;
+  html += `<div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh} — no-breaker: ${counts.noBreaker}</div>`;
+  html += `<div style="margin-top:6px;color:#9fb3cc">Broken-lower symbols (${counts.brokenLower}): <div class="list-inline">${brokenLowerSymbols.map(s=>`<span class="pill">${s}</span>`).join('')}</div></div>`;
   el.innerHTML = html;
   window._lastMatches = results;
   setStatus('Scan complete — matches: '+results.length);

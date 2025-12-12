@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Volume Break Detector — Top-N green + Candle above EMA200 (15m) — 24h red-break (strict)</title>
+  <title>Volume Break Detector — Top-N green + Candle above EMA200 (15m) — 24h red-break (quoteVol)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -25,7 +25,7 @@
 <body>
   <div class="card">
     <h1>Volume Break Detector — Top-N green + Candle above EMA200 (15m)</h1>
-    <p>Strict 24h red-break detector: finds the highest-volume red candle in the last 24h, looks for the earliest green that breaks that red volume, and applies your stop/ignore rules.</p>
+    <p>Strict 24h red-break detector (uses quote-volume): finds the highest quote-volume RED candle in the last 24h, looks for the earliest green that breaks that red quote-volume, and applies your stop/ignore rules.</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
@@ -99,6 +99,15 @@ let controller = { running:false };
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function safeNum(v){ return Number(String(v)); }
+function fmt(n){ // friendly big number
+  if(n == null || isNaN(n)) return '-';
+  if(n >= 1e9) return (n/1e9).toFixed(2)+'B';
+  if(n >= 1e6) return (n/1e6).toFixed(2)+'M';
+  if(n >= 1e3) return (n/1e3).toFixed(2)+'K';
+  return Number(n).toLocaleString();
+}
+function fmtPrice(p){ if(p==null) return '-'; return Number(p).toPrecision(6); }
+function fmtTime(ms){ try{ return new Date(ms).toLocaleString(); }catch(e){ return String(ms); } }
 
 async function batchMap(items, fn, batchSize=3, delayMs=700){
   const out=[];
@@ -140,152 +149,128 @@ function isLastCloseAboveEMA200(klines){
 }
 
 /* ---------------------------
-   STRICT: 24h highest-volume red -> earliest green-break detector
-   - choose highest-volume RED candle within last 24h (ignore green)
-   - find earliest later green with volume >= redVol * volRatio
-   - if earliestGreen.high < red.high -> STOP / ignore (broken earlier at lower price)
-   - else if earliestGreen.high < dayHigh -> MATCH
-   - else -> ignore (green made new day-high)
-*/
-function detect24hHighestRedBreak_strict(klines, volRatio=1.0){
-  if(!klines || klines.length < 100) return null; // need enough data
-  const last24h = klines.slice(-96); // last 96 * 15m = 24h
-  if(last24h.length === 0) return null;
-
-  // compute day high
-  let dayHigh = -Infinity;
-  last24h.forEach(c => {
-    const h = safeNum(c.high);
-    if(h > dayHigh) dayHigh = h;
-  });
-
-  // numeric mapping
-  const c = last24h.map(x=>({
-    openTime: x.openTime,
-    open: safeNum(x.open),
-    high: safeNum(x.high),
-    low: safeNum(x.low),
-    close: safeNum(x.close),
-    volume: safeNum(x.volume)
-  }));
-
-  // 1) find highest-volume RED candle only (close < open)
-  let maxRed = null;
-  for(let i=0;i<c.length;i++){
-    const cand = c[i];
-    if(cand.close < cand.open){
-      if(maxRed === null || cand.volume > maxRed.candle.volume){
-        maxRed = { idx: i, candle: cand };
-      }
-    }
-  }
-  if(!maxRed) return null; // no red candles in the 24h, nothing to do
-
-  const redIdx = maxRed.idx;
-  const redC = maxRed.candle;
-
-  // 2) find earliest later green candle that breaks red volume
-  let firstGreenBreaker = null;
-  for(let j = redIdx + 1; j < c.length; j++){
-    const later = c[j];
-    if(later.close <= later.open) continue; // must be green
-    if(later.volume < redC.volume * volRatio) continue; // not large enough
-    firstGreenBreaker = { idx: j, candle: later };
-    break;
-  }
-
-  // 3) if no green breaker found => no match
-  if(!firstGreenBreaker) return null;
-
-  const g = firstGreenBreaker.candle;
-
-  // 4) If earliest green breaker's HIGH is LOWER than the red candle's HIGH -> STOP/ignore
-  if(g.high < redC.high){
-    return {
-      found: false,
-      reason: 'broken_earlier_at_lower_price',
-      redIndex24h: redIdx, redCandle: redC,
-      greenIndex24h: firstGreenBreaker.idx, greenCandle: g,
-      redVol: redC.volume, greenVol: g.volume,
-      dayHigh
-    };
-  }
-
-  // 5) Otherwise require green.high < dayHigh (not new day high)
-  if(g.high >= dayHigh){
-    return {
-      found: false,
-      reason: 'green_made_day_high',
-      redIndex24h: redIdx, redCandle: redC,
-      greenIndex24h: firstGreenBreaker.idx, greenCandle: g,
-      redVol: redC.volume, greenVol: g.volume,
-      dayHigh
-    };
-  }
-
-  // 6) Passed checks => match
-  return {
-    found: true,
-    redIndex24h: redIdx,
-    redCandle: redC,
-    greenIndex24h: firstGreenBreaker.idx,
-    greenCandle: g,
-    redVol: redC.volume,
-    greenVol: g.volume,
-    dayHigh
-  };
-}
-
-/* ---------------------------
-   fallback detector (kept)
+   fetchKlines: preserve quoteVolume (kline[7]) and fallback
    --------------------------- */
-function detectVolumeBreak(candles, volRatio=1.0){
-  if(!candles || candles.length < 8) return null;
-  const c = candles.map(x=>({
-    openTime: x.openTime,
-    open: safeNum(x.open),
-    high: safeNum(x.high),
-    low: safeNum(x.low),
-    close: safeNum(x.close),
-    volume: safeNum(x.volume)
-  }));
-  for(let i=0;i<c.length-4;i++){
-    const highC = c[i];
-    const nextSlice = c.slice(i+1, i+1+6);
-    if(highC.close >= highC.open) continue;
-    let minLow = Infinity, minIdx=-1;
-    for(let j=0;j<nextSlice.length;j++){
-      if(nextSlice[j].low < minLow){ minLow = nextSlice[j].low; minIdx = j; }
-    }
-    if(minIdx<0) continue;
-    const lowC = nextSlice[minIdx];
-    if(lowC.close <= lowC.open) continue;
-    if(lowC.volume < highC.volume * volRatio) continue;
-    if(!(lowC.low < highC.low)) continue;
-    const afterSlice = nextSlice.slice(minIdx+1, minIdx+1+3);
-    const recovered = afterSlice.some(x => x.close > highC.close);
-    return {found:true, highIndex:i, highCandle:highC, lowIndex:i+1+minIdx, lowCandle:lowC, redVol:highC.volume, greenVol:lowC.volume, recovered};
-  }
-  return null;
-}
-
-/* ---------------------------
-   Binance fetch helpers
-   --------------------------- */
-async function fetch24hrAll(){
-  const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr');
-  if(!res.ok) throw new Error('24hr fetch failed: '+res.status);
-  return res.json();
-}
 async function fetchKlines(symbol){
   const url = `${API_BASE}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&limit=${KLINES_LIMIT}`;
   const res = await fetch(url);
   if(!res.ok) throw new Error('klines failed: '+res.status+' for '+symbol);
   const data = await res.json();
+  // columns: [0 openTime,1 open,2 high,3 low,4 close,5 baseVol,6 closeTime,7 quoteVol,8 trades, ...]
   return data.map(c=>({
-    openTime:c[0], open:c[1], high:c[2], low:c[3], close:c[4], volume:c[5],
-    // keep quoteVolume available if you want to switch later: quoteVolume: c[7]
+    openTime: c[0],
+    open: c[1],
+    high: c[2],
+    low: c[3],
+    close: c[4],
+    baseVol: c[5],
+    closeTime: c[6],
+    quoteVol: (c[7] !== undefined && c[7] !== null) ? c[7] : null,
+    trades: c[8]
   }));
+}
+
+/* ---------------------------
+   STRICT: 24h highest-quoteVol RED -> earliest green-break detector
+   - chooses highest **quote volume** red candle in last 24h (ignore green)
+   - earliest later green with quoteVol >= red.quoteVol * volRatio
+   - if earliestGreen.high < red.high -> STOP / ignore (broken earlier at lower price)
+   - else if earliestGreen.high < dayHigh -> MATCH
+   - else -> ignore (green made new day-high)
+*/
+function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
+  if(!klines || klines.length < 100) return null;
+  const last24h = klines.slice(-96); // ~24h of 15m candles
+  if(last24h.length === 0) return null;
+
+  // compute day high (within last24h)
+  let dayHigh = -Infinity;
+  last24h.forEach(c => { const h = safeNum(c.high); if(h > dayHigh) dayHigh = h; });
+
+  // numeric mapping with quoteVol (fallback to baseVol * close)
+  const c = last24h.map(x => {
+    const close = safeNum(x.close);
+    const baseVol = safeNum(x.baseVol);
+    let q = null;
+    if(x.quoteVol !== undefined && x.quoteVol !== null && x.quoteVol !== '') {
+      q = safeNum(x.quoteVol);
+    }
+    if(!q || q === 0) q = baseVol * close;
+    return {
+      openTime: x.openTime,
+      open: safeNum(x.open),
+      high: safeNum(x.high),
+      low: safeNum(x.low),
+      close,
+      baseVol,
+      quoteVol: q
+    };
+  });
+
+  // find RED candles
+  const redCandles = [];
+  for(let i=0;i<c.length;i++){
+    if(c[i].close < c[i].open) redCandles.push({idx:i, candle:c[i]});
+  }
+  if(redCandles.length === 0) return null;
+
+  // choose red with max quoteVol
+  let maxRed = redCandles[0];
+  for(const r of redCandles){
+    if(r.candle.quoteVol > maxRed.candle.quoteVol) maxRed = r;
+  }
+  const redIdx = maxRed.idx;
+  const redC = maxRed.candle;
+
+  // search earliest later GREEN with quoteVol >= red.quoteVol * volRatio
+  let firstGreen = null;
+  for(let j = redIdx + 1; j < c.length; j++){
+    const later = c[j];
+    if(later.close <= later.open) continue; // must be green
+    if(later.quoteVol < redC.quoteVol * volRatio) continue;
+    firstGreen = { idx: j, candle: later };
+    break;
+  }
+
+  if(!firstGreen) return null;
+
+  const g = firstGreen.candle;
+
+  // If earliest green.high < red.high -> stop / ignore (user asked to stop detection)
+  if(g.high < redC.high){
+    return {
+      found: false,
+      reason: 'broken_earlier_at_lower_price',
+      redIndex24h: redIdx, redCandle: redC,
+      greenIndex24h: firstGreen.idx, greenCandle: g,
+      redQuoteVol: redC.quoteVol, greenQuoteVol: g.quoteVol,
+      dayHigh
+    };
+  }
+
+  // require green.high < dayHigh (not new day high)
+  if(g.high >= dayHigh){
+    return {
+      found: false,
+      reason: 'green_made_day_high',
+      redIndex24h: redIdx, redCandle: redC,
+      greenIndex24h: firstGreen.idx, greenCandle: g,
+      redQuoteVol: redC.quoteVol, greenQuoteVol: g.quoteVol,
+      dayHigh
+    };
+  }
+
+  // match
+  return {
+    found: true,
+    redIndex24h: redIdx,
+    redCandle: redC,
+    greenIndex24h: firstGreen.idx,
+    greenCandle: g,
+    redQuoteVol: redC.quoteVol,
+    greenQuoteVol: g.quoteVol,
+    dayHigh
+  };
 }
 
 /* ---------------------------
@@ -296,18 +281,14 @@ async function makeBeep(){
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const o = ctx.createOscillator();
     const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.value = 900;
-    g.gain.value = 0.06;
-    o.connect(g); g.connect(ctx.destination);
-    o.start();
+    o.type = 'sine'; o.frequency.value = 900; g.gain.value = 0.06;
+    o.connect(g); g.connect(ctx.destination); o.start();
     setTimeout(()=>{ o.stop(); ctx.close(); }, 180);
   }catch(e){ console.warn('beep failed', e); }
 }
 function notifyUser(title, body, symbol){
   if(window.Notification && Notification.permission === 'granted'){
-    const n = new Notification(title, { body });
-    n.onclick = ()=>{ window.focus(); openSymbol(symbol); };
+    const n = new Notification(title, { body }); n.onclick = ()=>{ window.focus(); openSymbol(symbol); };
   }
   const matchesEl = document.getElementById('matches');
   const note = document.createElement('div');
@@ -326,7 +307,7 @@ function copySym(sym){
 
 /* ---------------------------
    Two-phase scan: runScan()
-   Uses strict detector in phase B and collects reason counts
+   Uses strict quoteVol detector in phase B and counts ignore reasons
    --------------------------- */
 function setStatus(s){ document.getElementById('status').textContent = s; }
 function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
@@ -395,7 +376,7 @@ async function runScan(){
   for(const p of emaOkSymbols){
     try{
       const kl = klinesMap[p.symbol];
-      const match = detect24hHighestRedBreak_strict(kl, volRatio);
+      const match = detect24hHighestRedBreak_quote(kl, volRatio);
       if(match && match.found){
         results.push({symbol:p.symbol, pct:p.pct, match});
       }else if(match && match.reason === 'broken_earlier_at_lower_price'){
@@ -421,10 +402,22 @@ async function runScan(){
   }
 
   // render matches + notify
-  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>RedVol</th><th>GreenVol</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>Red time</th><th>Red quoteVol</th><th>Red high</th><th>Green time</th><th>Green quoteVol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
   for(const r of results){
-    html += `<tr class="match-row"><td>${r.symbol}</td><td>${Number(r.pct).toFixed(2)}%</td><td>${Number(r.match.redVol).toLocaleString()}</td><td class="ok">${Number(r.match.greenVol).toLocaleString()}</td><td>${Number(r.match.dayHigh).toLocaleString()}</td><td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td></tr>`;
-    const body = `24h highest red vol — redVol ${Number(r.match.redVol).toLocaleString()} ; later greenVol ${Number(r.match.greenVol).toLocaleString()} (green.high < dayHigh)`;
+    const m = r.match;
+    html += `<tr class="match-row">
+      <td>${r.symbol}</td>
+      <td>${Number(r.pct).toFixed(2)}%</td>
+      <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
+      <td>${fmt(m.redQuoteVol)}</td>
+      <td>${fmtPrice(m.redCandle.high)}</td>
+      <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
+      <td class="ok">${fmt(m.greenQuoteVol)}</td>
+      <td>${fmtPrice(m.greenCandle.high)}</td>
+      <td>${fmtPrice(m.dayHigh)}</td>
+      <td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td>
+    </tr>`;
+    const body = `24h highest red quoteVol ${fmt(m.redQuoteVol)} — green quoteVol ${fmt(m.greenQuoteVol)} (green.high < dayHigh)`;
     notifyUser('24h Red-Vol Break: '+r.symbol, body, r.symbol);
     if(document.getElementById('autoOpen').checked){
       try{ openSymbol(r.symbol); }catch(e){ console.warn('auto-open failed', e); }
@@ -435,6 +428,29 @@ async function runScan(){
   el.innerHTML = html;
   window._lastMatches = results;
   setStatus('Scan complete — matches: '+results.length);
+}
+
+/* ---------------------------
+   Helpers to convert the last24 index back to real openTime for display
+   We stored klinesMap[symbol] as full klines; detect uses kl.slice(-96)
+   so mapping idx -> klines[kl.length-96 + idx].openTime
+*/
+function last24IndexToAbsTime(idx24, fullKlines){
+  try{
+    const full = fullKlines || [];
+    const offset = Math.max(0, full.length - 96);
+    const pos = offset + idx24;
+    return full[pos] ? full[pos].openTime : null;
+  }catch(e){ return null; }
+}
+
+/* ---------------------------
+   fetch24hrAll helper
+   --------------------------- */
+async function fetch24hrAll(){
+  const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr');
+  if(!res.ok) throw new Error('24hr fetch failed: '+res.status);
+  return res.json();
 }
 
 /* ---------------------------
@@ -467,7 +483,7 @@ async function startLoop(){
   }
 }
 
-// single-symbol test
+// single-symbol test (shows quoteVol-aware check)
 document.getElementById('testBtn').addEventListener('click', async ()=>{
   const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
   const out = document.getElementById('testOut');
@@ -476,10 +492,10 @@ document.getElementById('testBtn').addEventListener('click', async ()=>{
   out.textContent = '';
   try{
     const k = await fetchKlines(s);
-    st.textContent = 'Checking last-close > EMA200 & 24h red-break (strict)...';
+    st.textContent = 'Checking last-close > EMA200 & 24h red-break (quoteVol strict)...';
     const emaOk = isLastCloseAboveEMA200(k);
     const vr = Number(document.getElementById('volRatio').value) || 1.0;
-    const match = detect24hHighestRedBreak_strict(k, vr);
+    const match = detect24hHighestRedBreak_quote(k, vr);
     out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\n24h red-break result:\n${match ? JSON.stringify(match, null, 2) : 'No pattern / insufficient data'}`;
     st.textContent = 'Done';
     console.log('Test klines sample:', k.slice(-24));
@@ -500,7 +516,7 @@ document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
 });
 
 /* ---------------------------
-   Utilities exposed + errors
+   Expose utilities + error logging
    --------------------------- */
 window.openSymbol = openSymbol;
 window.copySym = copySym;

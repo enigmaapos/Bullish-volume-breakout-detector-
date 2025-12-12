@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Volume Break Detector — Candle above EMA200 filter (15m)</title>
+  <title>Volume Break Detector — Top-N green + Candle above EMA200 (15m)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -24,10 +24,11 @@
 </head>
 <body>
   <div class="card">
-    <h1>Volume Break Detector — Candle above EMA200 filter (15m)</h1>
-    <p>Two-phase scan: (A) find green USDT pairs where the <strong>last candle closes above EMA200</strong>, (B) run the volume-break detector only on those. Blacklist is applied before scanning.</p>
+    <h1>Volume Break Detector — Top-N green + Candle above EMA200 (15m)</h1>
+    <p>Scans only the top N USDT pairs by 24h price change (positive). Then applies last-close &gt; EMA200 filter and the volume-break detector. Blacklist is applied after selecting top N.</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
       <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
       <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" style="width:60px"/></label>
       <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" style="width:80px"/></label>
@@ -38,8 +39,11 @@
     </div>
 
     <div class="debug" id="debugLine">Debug: —</div>
-    <div style="margin-top:8px"><small id="blacklistInfo">Blacklist: 0 symbols filtered</small></div>
-    <div style="margin-top:6px"><small id="emaInfo">EMA-OK: 0 symbols (last close above EMA200)</small></div>
+    <div style="margin-top:8px">
+      <small id="blacklistInfo">Blacklist: 0 symbols filtered</small> &nbsp;•&nbsp;
+      <small id="topInfo">Top-N selected: 0</small> &nbsp;•&nbsp;
+      <small id="emaInfo">EMA-OK: 0 (last close > EMA200)</small>
+    </div>
   </div>
 
   <div class="card">
@@ -72,7 +76,7 @@
     <h2>Notes</h2>
     <ul>
       <li>Run from a static server (e.g. <code>python -m http.server</code>) to reduce CORS issues, or use a Node proxy.</li>
-      <li>We fetch ~300 klines per symbol to compute EMA200 — keep batchSize small and polling >= 30s.</li>
+      <li>We fetch ~300 klines per symbol to compute EMA200 — keep batchSize small and polling ≥ 30s.</li>
     </ul>
   </div>
 
@@ -132,11 +136,9 @@ function calcEMA(period, prices){
   }
   return out;
 }
-
-// NEW: simpler condition — last candle close must be above EMA200
 function isLastCloseAboveEMA200(klines){
   const closes = klines.map(k => safeNum(k.close));
-  if(closes.length < 210) return false; // need enough data to seed EMA200
+  if(closes.length < 210) return false;
   const ema200 = calcEMA(200, closes);
   const lastIdx = closes.length - 1;
   const lastEMA200 = ema200[lastIdx];
@@ -242,17 +244,22 @@ async function runScan(){
   try{ tickers = await fetch24hrAll(); }
   catch(e){ console.error(e); setStatus('Error fetching 24hr tickers — see console'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
 
-  // phase 0: filter USDT & positive 24h and apply blacklist
+  // phase 0: filter USDT & positive 24h, sort by pct desc, take top N, apply blacklist
+  const topN = Math.max(1, Math.min(200, Number(document.getElementById('topN').value || 30)));
   const greenPairsAll = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
     .filter(t => safeNum(t.priceChangePercent) > 0)
     .map(t=>({symbol:t.symbol, pct:safeNum(t.priceChangePercent)}));
-  const greenPairs = greenPairsAll.filter(p => !blacklist.includes(p.symbol));
-  const filteredCount = greenPairsAll.length - greenPairs.length;
-  document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered — ${filteredCount} removed this scan`;
-  setDebug(`greenPairs=${greenPairs.length} (first 8): ${greenPairs.slice(0,8).map(x=>x.symbol).join(', ')}`);
-  if(greenPairs.length === 0){ setStatus('No green USDT pairs (after blacklist)'); document.getElementById('matches').innerText='No green pairs'; return; }
+  // sort desc by pct
+  greenPairsAll.sort((a,b)=> b.pct - a.pct);
+  const topCandidates = greenPairsAll.slice(0, topN);
+  const topAfterBlacklist = topCandidates.filter(p => !blacklist.includes(p.symbol));
+  const filteredCount = topCandidates.length - topAfterBlacklist.length;
+  document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered — ${filteredCount} removed from top${topN}`;
+  document.getElementById('topInfo').textContent = `Top-N selected: ${topCandidates.length} (after blacklist: ${topAfterBlacklist.length})`;
+  setDebug(`topCandidates=${topCandidates.length} (showing first 8): ${topCandidates.slice(0,8).map(x=>x.symbol).join(', ')}`);
+  if(topAfterBlacklist.length === 0){ setStatus('No top-N green USDT pairs (after blacklist)'); document.getElementById('matches').innerText='No top-N pairs'; return; }
 
-  // phase A: fetch klines in batches and compute "last close above EMA200" — collect EMA-OK symbols + store klines
+  // phase A: fetch klines for topAfterBlacklist in batches and compute last-close > EMA200 — collect EMA-OK symbols + store klines
   setStatus('Phase A: fetching klines & checking last-close > EMA200 (this may take a while)...');
   const batchSize = Number(document.getElementById('batchSize').value) || 3;
   const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
@@ -261,14 +268,13 @@ async function runScan(){
   const klinesMap = {}; // symbol -> klines array
   let fetchFailed = 0;
 
-  await batchMap(greenPairs, async (p) => {
+  await batchMap(topAfterBlacklist, async (p) => {
     try{
       const kl = await fetchKlines(p.symbol);
-      // check last close > EMA200
       const emaOk = isLastCloseAboveEMA200(kl);
       if(emaOk){
         emaOkSymbols.push({symbol:p.symbol, pct:p.pct});
-        klinesMap[p.symbol] = kl; // store for phase B
+        klinesMap[p.symbol] = kl;
       }
       return true;
     }catch(e){
@@ -280,7 +286,6 @@ async function runScan(){
 
   setDebug(`EMA-OK count: ${emaOkSymbols.length}`);
   document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} symbols (last close > EMA200) — fetch failed: ${fetchFailed}`;
-  // show EMA-OK symbols in UI
   document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
 
   if(emaOkSymbols.length === 0){
@@ -289,7 +294,7 @@ async function runScan(){
     return;
   }
 
-  // phase B: run volume-break detection only on EMA-OK symbols (use klinesMap, no extra fetch)
+  // phase B: run volume-break detection only on EMA-OK symbols (use klinesMap)
   setStatus(`Phase B: checking volume-break on ${emaOkSymbols.length} EMA-OK symbols`);
   const results = [];
   for(const p of emaOkSymbols){

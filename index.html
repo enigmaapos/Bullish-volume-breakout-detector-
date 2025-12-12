@@ -1,9 +1,10 @@
 <!doctype html>
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Volume Break Detector — require top-24h candle to be RED (15m)</title>
+  <title>Volume Break Detector — require top-24h candle to be RED</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -21,44 +22,63 @@
     .debug{font-size:13px;color:#9fb3cc;margin-top:8px}
     .notify{padding:8px;border-radius:6px;background:#072a1d;color:#bff3e8;margin-bottom:8px}
     .list-inline{display:flex;gap:6px;flex-wrap:wrap}
-    .pill{background:#071722;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.03)}
+    .pill{background:#071722;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.03);cursor:pointer}
+    .section-title{display:flex;align-items:center;justify-content:space-between}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Volume Break Detector — require top-24h candle to be RED</h1>
-    <p>Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a <strong>red</strong> candle. Then looks for the earliest green that breaks that red's baseVol. This version counts how many top-N pairs have that red which is later <em>broken by a green at a lower price</em> (the "broken-lower" case).</p>
+    <p>Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a <strong>red</strong> candle. Then looks for the earliest green that breaks that red's baseVol. This version shows the ignored groups and the full list of symbols that have the top-24h candle red (Option A).</p><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+  <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
+  <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
+  <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" style="width:60px"/></label>
+  <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" style="width:80px"/></label>
+  <label><input id="autoOpen" type="checkbox" /> Auto-open on match</label>
+  <button id="startBtn">Start</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <small id="status">Idle</small>
+</div>
 
-    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-      <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
-      <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" style="width:80px"/></label>
-      <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" style="width:60px"/></label>
-      <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" style="width:80px"/></label>
-      <label><input id="autoOpen" type="checkbox" /> Auto-open on match</label>
-      <button id="startBtn">Start</button>
-      <button id="stopBtn" disabled>Stop</button>
-      <small id="status">Idle</small>
-    </div>
+<div class="debug" id="debugLine">Debug: —</div>
+<div style="margin-top:8px">
+  <small id="blacklistInfo">Blacklist: 0 symbols filtered</small> &nbsp;•&nbsp;
+  <small id="topInfo">Top-N selected: 0</small> &nbsp;•&nbsp;
+  <small id="emaInfo">EMA-OK: 0 (last close > EMA200)</small>
+</div>
 
-    <div class="debug" id="debugLine">Debug: —</div>
-    <div style="margin-top:8px">
-      <small id="blacklistInfo">Blacklist: 0 symbols filtered</small> &nbsp;•&nbsp;
-      <small id="topInfo">Top-N selected: 0</small> &nbsp;•&nbsp;
-      <small id="emaInfo">EMA-OK: 0 (last close > EMA200)</small>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Matches</h2>
+  </div>  <div class="card">
+    <div class="section-title"><h2>Matches</h2><small id="matchSummary">—</small></div>
     <div id="matches">No results yet</div>
-  </div>
-
-  <div class="card">
+  </div>  <div class="card">
     <h2>EMA-Positive Symbols (phase A)</h2>
     <div id="emaSymbols">None yet</div>
-  </div>
-
-  <div class="card">
+  </div>  <div class="card">
+    <h2>Ignored / Groups</h2>
+    <div style="margin-top:8px;color:#9fb3cc">Use these lists to inspect which symbols were ignored and why. Click a pill to open the symbol on Binance.</div>
+    <div style="margin-top:10px">
+      <div><strong>Top-volume is NOT red</strong> (<span id="cntTopNotRed">0</span>):</div>
+      <div id="topNotRedList" class="list-inline"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div><strong>Broken earlier at lower price (green broke red volume but at lower high)</strong> (<span id="cntBrokenLower">0</span>):</div>
+      <div id="brokenLowerList" class="list-inline"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div><strong>Green made day-high</strong> (<span id="cntGreenDayHigh">0</span>):</div>
+      <div id="greenDayHighList" class="list-inline"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div><strong>No later green breaker</strong> (<span id="cntNoBreaker">0</span>):</div>
+      <div id="noBreakerList" class="list-inline"></div>
+    </div>
+  </div>  <div class="card">
+    <h2>Top-24h RED high-volume symbols (top-volume candle is red)</h2>
+    <div style="margin-top:8px;color:#9fb3cc">These symbols had the *absolute highest baseVol* within the 24h window and that candle was red (this is the Option A list you requested).</div>
+    <div style="margin-top:10px">
+      <div id="topVolRedList" class="list-inline"></div>
+    </div>
+  </div>  <div class="card">
     <h2>Quick Test (single symbol)</h2>
     <div style="display:flex;gap:8px;align-items:center">
       <input id="testSymbol" value="BTCUSDT" style="width:140px"/>
@@ -66,15 +86,11 @@
       <small id="testStatus">—</small>
     </div>
     <pre id="testOut"></pre>
-  </div>
-
-  <div class="card">
+  </div>  <div class="card">
     <h2>Blacklist (editable)</h2>
     <textarea id="blacklistArea" rows="6" style="width:100%;font-family:monospace"></textarea>
     <div style="margin-top:8px"><button id="updateBlacklistBtn">Update Blacklist</button></div>
-  </div>
-
-<script>
+  </div><script>
 /* ---------------------------
    Blacklist (initial)
    --------------------------- */
@@ -167,10 +183,10 @@ async function fetchKlines(symbol){
 }
 
 /* ---------------------------
-   UPDATED detector:
-   - uses baseVol
-   - returns reason 'broken_earlier_at_lower_price' for the case you asked
-   - also returns redCount24h
+   UPDATED detector (Option A):
+   - find absolute top-baseVol candle in last 24h
+   - require that top-baseVol candle is RED
+   - report reasons and redCount24h
 */
 function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
   if(!klines || klines.length < 100) return null;
@@ -275,7 +291,7 @@ function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
 }
 
 /* ---------------------------
-   Notifications & helpers (unchanged)
+   Notifications & helpers
 */
 async function makeBeep(){
   try{
@@ -354,6 +370,10 @@ async function runScan(){
   const results = [];
   let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0, noBreaker:0 };
   const brokenLowerSymbols = [];
+  const topVolRedSymbols = [];
+  const topNotRedSymbols = [];
+  const greenDayHighSymbols = [];
+  const noBreakerSymbols = [];
 
   for(const p of emaOkSymbols){
     try{
@@ -361,18 +381,36 @@ async function runScan(){
       const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
       if(match && match.found){
         results.push({symbol:p.symbol, pct:p.pct, match});
-      }else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; }
-      else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; brokenLowerSymbols.push(p.symbol); }
-      else if(match && match.reason === 'green_made_day_high'){ counts.greenDayHigh++; }
-      else if(match && match.reason === 'no_later_green_breaker'){ counts.noBreaker++; }
+        topVolRedSymbols.push(p.symbol);
+      }
+      else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; topNotRedSymbols.push(p.symbol); }
+      else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; brokenLowerSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
+      else if(match && match.reason === 'green_made_day_high'){ counts.greenDayHigh++; greenDayHighSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
+      else if(match && match.reason === 'no_later_green_breaker'){ counts.noBreaker++; noBreakerSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
+      // note: when top-volume is red but no match it will be included in topVolRedSymbols in the branches above (except top_not_red)
     }catch(e){ console.warn('phase B failed for', p.symbol, e.message); }
   }
 
+  // update ignored lists UI
+  document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
+  document.getElementById('topNotRedList').innerHTML = topNotRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+
+  document.getElementById('cntBrokenLower').textContent = counts.brokenLower;
+  document.getElementById('brokenLowerList').innerHTML = brokenLowerSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+
+  document.getElementById('cntGreenDayHigh').textContent = counts.greenDayHigh;
+  document.getElementById('greenDayHighList').innerHTML = greenDayHighSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+
+  document.getElementById('cntNoBreaker').textContent = counts.noBreaker;
+  document.getElementById('noBreakerList').innerHTML = noBreakerSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+
+  // top-volume-red list (absolute top-volume candle was red)
+  document.getElementById('topVolRedList').innerHTML = topVolRedSymbols.length ? topVolRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') : '<span style="color:#6b7280">—</span>';
+
   const el = document.getElementById('matches');
   if(results.length === 0){
-    el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>
-      <div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh} — no-breaker: ${counts.noBreaker}</div>
-      <div style="margin-top:8px;color:#9fb3cc">Broken-lower symbols (${counts.brokenLower}): <div class="list-inline">${brokenLowerSymbols.map(s=>`<span class="pill">${s}</span>`).join('')}</div></div>`;
+    el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
+    document.getElementById('matchSummary').textContent = `0 matches`;
     setStatus('Scan complete — no matches');
     return;
   }
@@ -396,10 +434,9 @@ async function runScan(){
     notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)} — redCount24h: ${m.redCount24h}`, r.symbol);
   }
   html += '</tbody></table>';
-  html += `<div style="margin-top:8px;color:#9fb3cc">Ignored: top-not-red: ${counts.topNotRed} — broken-lower: ${counts.brokenLower} — green-day-high: ${counts.greenDayHigh} — no-breaker: ${counts.noBreaker}</div>`;
-  html += `<div style="margin-top:6px;color:#9fb3cc">Broken-lower symbols (${counts.brokenLower}): <div class="list-inline">${brokenLowerSymbols.map(s=>`<span class="pill">${s}</span>`).join('')}</div></div>`;
   el.innerHTML = html;
   window._lastMatches = results;
+  document.getElementById('matchSummary').textContent = `${results.length} matches`;
   setStatus('Scan complete — matches: '+results.length);
 }
 
@@ -460,6 +497,5 @@ document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
 window.openSymbol = openSymbol;
 window.copySym = copySym;
 window.addEventListener('error', e=>console.error('Runtime error', e));
-</script>
-</body>
+</script></body>
 </html>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Volume Break Detector — Top-N green + Candle above EMA200 (15m) — 24h red-break (quoteVol)</title>
+  <title>Volume Break Detector — Top-N green + Candle above EMA200 (15m) — 24h red-break (baseVol)</title>
   <style>
     body{font-family:Inter,system-ui,Arial;margin:12px;background:#0f1720;color:#e6eef8}
     .card{background:#0b1220;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6);margin-bottom:12px}
@@ -25,7 +25,7 @@
 <body>
   <div class="card">
     <h1>Volume Break Detector — Top-N green + Candle above EMA200 (15m)</h1>
-    <p>Strict 24h red-break detector (uses quote-volume): finds the highest quote-volume RED candle in the last 24h, looks for the earliest green that breaks that red quote-volume, and applies your stop/ignore rules.</p>
+    <p>Strict 24h red-break detector (uses base-volume "Vol" from kline index 5): finds the highest base-volume RED candle in the last 24h, looks for the earliest green that breaks that base-volume, and applies your stop/ignore rules.</p>
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
       <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" style="width:80px"/></label>
@@ -99,13 +99,7 @@ let controller = { running:false };
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function safeNum(v){ return Number(String(v)); }
-function fmt(n){ // friendly big number
-  if(n == null || isNaN(n)) return '-';
-  if(n >= 1e9) return (n/1e9).toFixed(2)+'B';
-  if(n >= 1e6) return (n/1e6).toFixed(2)+'M';
-  if(n >= 1e3) return (n/1e3).toFixed(2)+'K';
-  return Number(n).toLocaleString();
-}
+function fmt(n){ if(n == null || isNaN(n)) return '-'; if(n >= 1e9) return (n/1e9).toFixed(2)+'B'; if(n >= 1e6) return (n/1e6).toFixed(2)+'M'; if(n >= 1e3) return (n/1e3).toFixed(2)+'K'; return Number(n).toLocaleString(); }
 function fmtPrice(p){ if(p==null) return '-'; return Number(p).toPrecision(6); }
 function fmtTime(ms){ try{ return new Date(ms).toLocaleString(); }catch(e){ return String(ms); } }
 
@@ -149,7 +143,7 @@ function isLastCloseAboveEMA200(klines){
 }
 
 /* ---------------------------
-   fetchKlines: preserve quoteVolume (kline[7]) and fallback
+   fetchKlines: preserve baseVol (kline[5]) as baseVol
    --------------------------- */
 async function fetchKlines(symbol){
   const url = `${API_BASE}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&limit=${KLINES_LIMIT}`;
@@ -171,14 +165,14 @@ async function fetchKlines(symbol){
 }
 
 /* ---------------------------
-   STRICT: 24h highest-quoteVol RED -> earliest green-break detector
-   - chooses highest **quote volume** red candle in last 24h (ignore green)
-   - earliest later green with quoteVol >= red.quoteVol * volRatio
+   STRICT: 24h highest-baseVol RED -> earliest green-break detector (baseVol)
+   - chooses highest base-volume RED candle in last 24h (ignore green)
+   - earliest later green with baseVol >= red.baseVol * volRatio
    - if earliestGreen.high < red.high -> STOP / ignore (broken earlier at lower price)
    - else if earliestGreen.high < dayHigh -> MATCH
    - else -> ignore (green made new day-high)
 */
-function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
+function detect24hHighestRedBreak_baseVol(klines, volRatio=1.0){
   if(!klines || klines.length < 100) return null;
   const last24h = klines.slice(-96); // ~24h of 15m candles
   if(last24h.length === 0) return null;
@@ -187,23 +181,15 @@ function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
   let dayHigh = -Infinity;
   last24h.forEach(c => { const h = safeNum(c.high); if(h > dayHigh) dayHigh = h; });
 
-  // numeric mapping with quoteVol (fallback to baseVol * close)
+  // numeric mapping using baseVol
   const c = last24h.map(x => {
-    const close = safeNum(x.close);
-    const baseVol = safeNum(x.baseVol);
-    let q = null;
-    if(x.quoteVol !== undefined && x.quoteVol !== null && x.quoteVol !== '') {
-      q = safeNum(x.quoteVol);
-    }
-    if(!q || q === 0) q = baseVol * close;
     return {
       openTime: x.openTime,
       open: safeNum(x.open),
       high: safeNum(x.high),
       low: safeNum(x.low),
-      close,
-      baseVol,
-      quoteVol: q
+      close: safeNum(x.close),
+      baseVol: safeNum(x.baseVol)
     };
   });
 
@@ -214,20 +200,20 @@ function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
   }
   if(redCandles.length === 0) return null;
 
-  // choose red with max quoteVol
+  // choose red with max baseVol
   let maxRed = redCandles[0];
   for(const r of redCandles){
-    if(r.candle.quoteVol > maxRed.candle.quoteVol) maxRed = r;
+    if(r.candle.baseVol > maxRed.candle.baseVol) maxRed = r;
   }
   const redIdx = maxRed.idx;
   const redC = maxRed.candle;
 
-  // search earliest later GREEN with quoteVol >= red.quoteVol * volRatio
+  // search earliest later GREEN with baseVol >= red.baseVol * volRatio
   let firstGreen = null;
   for(let j = redIdx + 1; j < c.length; j++){
     const later = c[j];
     if(later.close <= later.open) continue; // must be green
-    if(later.quoteVol < redC.quoteVol * volRatio) continue;
+    if(later.baseVol < redC.baseVol * volRatio) continue;
     firstGreen = { idx: j, candle: later };
     break;
   }
@@ -236,14 +222,14 @@ function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
 
   const g = firstGreen.candle;
 
-  // If earliest green.high < red.high -> stop / ignore (user asked to stop detection)
+  // If earliest green.high < red.high -> stop / ignore
   if(g.high < redC.high){
     return {
       found: false,
       reason: 'broken_earlier_at_lower_price',
       redIndex24h: redIdx, redCandle: redC,
       greenIndex24h: firstGreen.idx, greenCandle: g,
-      redQuoteVol: redC.quoteVol, greenQuoteVol: g.quoteVol,
+      redBaseVol: redC.baseVol, greenBaseVol: g.baseVol,
       dayHigh
     };
   }
@@ -255,7 +241,7 @@ function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
       reason: 'green_made_day_high',
       redIndex24h: redIdx, redCandle: redC,
       greenIndex24h: firstGreen.idx, greenCandle: g,
-      redQuoteVol: redC.quoteVol, greenQuoteVol: g.quoteVol,
+      redBaseVol: redC.baseVol, greenBaseVol: g.baseVol,
       dayHigh
     };
   }
@@ -267,8 +253,8 @@ function detect24hHighestRedBreak_quote(klines, volRatio=1.0){
     redCandle: redC,
     greenIndex24h: firstGreen.idx,
     greenCandle: g,
-    redQuoteVol: redC.quoteVol,
-    greenQuoteVol: g.quoteVol,
+    redBaseVol: redC.baseVol,
+    greenBaseVol: g.baseVol,
     dayHigh
   };
 }
@@ -307,7 +293,7 @@ function copySym(sym){
 
 /* ---------------------------
    Two-phase scan: runScan()
-   Uses strict quoteVol detector in phase B and counts ignore reasons
+   Uses strict baseVol detector in phase B and counts ignore reasons
    --------------------------- */
 function setStatus(s){ document.getElementById('status').textContent = s; }
 function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
@@ -376,7 +362,7 @@ async function runScan(){
   for(const p of emaOkSymbols){
     try{
       const kl = klinesMap[p.symbol];
-      const match = detect24hHighestRedBreak_quote(kl, volRatio);
+      const match = detect24hHighestRedBreak_baseVol(kl, volRatio);
       if(match && match.found){
         results.push({symbol:p.symbol, pct:p.pct, match});
       }else if(match && match.reason === 'broken_earlier_at_lower_price'){
@@ -402,22 +388,22 @@ async function runScan(){
   }
 
   // render matches + notify
-  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>Red time</th><th>Red quoteVol</th><th>Red high</th><th>Green time</th><th>Green quoteVol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>Symbol</th><th>24h%</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
   for(const r of results){
     const m = r.match;
     html += `<tr class="match-row">
       <td>${r.symbol}</td>
       <td>${Number(r.pct).toFixed(2)}%</td>
       <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
-      <td>${fmt(m.redQuoteVol)}</td>
+      <td>${fmt(m.redBaseVol)}</td>
       <td>${fmtPrice(m.redCandle.high)}</td>
       <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
-      <td class="ok">${fmt(m.greenQuoteVol)}</td>
+      <td class="ok">${fmt(m.greenBaseVol)}</td>
       <td>${fmtPrice(m.greenCandle.high)}</td>
       <td>${fmtPrice(m.dayHigh)}</td>
       <td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td>
     </tr>`;
-    const body = `24h highest red quoteVol ${fmt(m.redQuoteVol)} — green quoteVol ${fmt(m.greenQuoteVol)} (green.high < dayHigh)`;
+    const body = `24h highest red baseVol ${fmt(m.redBaseVol)} — green baseVol ${fmt(m.greenBaseVol)} (green.high < dayHigh)`;
     notifyUser('24h Red-Vol Break: '+r.symbol, body, r.symbol);
     if(document.getElementById('autoOpen').checked){
       try{ openSymbol(r.symbol); }catch(e){ console.warn('auto-open failed', e); }
@@ -432,8 +418,6 @@ async function runScan(){
 
 /* ---------------------------
    Helpers to convert the last24 index back to real openTime for display
-   We stored klinesMap[symbol] as full klines; detect uses kl.slice(-96)
-   so mapping idx -> klines[kl.length-96 + idx].openTime
 */
 function last24IndexToAbsTime(idx24, fullKlines){
   try{
@@ -483,7 +467,7 @@ async function startLoop(){
   }
 }
 
-// single-symbol test (shows quoteVol-aware check)
+// single-symbol test (shows baseVol-aware check)
 document.getElementById('testBtn').addEventListener('click', async ()=>{
   const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
   const out = document.getElementById('testOut');
@@ -492,10 +476,10 @@ document.getElementById('testBtn').addEventListener('click', async ()=>{
   out.textContent = '';
   try{
     const k = await fetchKlines(s);
-    st.textContent = 'Checking last-close > EMA200 & 24h red-break (quoteVol strict)...';
+    st.textContent = 'Checking last-close > EMA200 & 24h red-break (baseVol strict)...';
     const emaOk = isLastCloseAboveEMA200(k);
     const vr = Number(document.getElementById('volRatio').value) || 1.0;
-    const match = detect24hHighestRedBreak_quote(k, vr);
+    const match = detect24hHighestRedBreak_baseVol(k, vr);
     out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\n24h red-break result:\n${match ? JSON.stringify(match, null, 2) : 'No pattern / insufficient data'}`;
     st.textContent = 'Done';
     console.log('Test klines sample:', k.slice(-24));

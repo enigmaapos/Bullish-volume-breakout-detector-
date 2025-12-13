@@ -509,40 +509,24 @@
   }));
 
   const gIdx = absorptionMatch.greenIndex24h;
-  const gHigh = absorptionMatch.greenCandle.high;
-  const gLow  = absorptionMatch.greenCandle.low;
-
-  let redRetest = false;
-  let breakdown = false;
+  const gLow = absorptionMatch.greenCandle.low;
 
   for (let i = gIdx + 1; i < last24h.length; i++) {
     const c = last24h[i];
 
-    // ❌ sellers tried again
-    if (c.close < c.open && c.low < gLow) {
-      redRetest = true;
-      break;
-    }
-
     // ❌ structure failed
-    if (c.low < gLow) {
-      breakdown = true;
-      break;
-    }
+    if (c.low < gLow) return null;
   }
 
-  if (redRetest || breakdown) return null;
-
-  // ✅ continuation confirmed
+  // ✅ CONTINUATION CONFIRMED
   return {
+    ...absorptionMatch,               // 🔥 KEEP FULL STRUCTURE
     found: true,
     type: 'post_absorption_continuation',
     label: 'Post-absorption continuation',
-    intent: 'Trend continuation',
-    baseGreenHigh: gHigh
+    intent: 'Trend continuation'
   };
-    }
-      
+}
       
     function detect24hVolumeLocationAI(klines){
   if (!klines || klines.length < 96) return null;

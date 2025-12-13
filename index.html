@@ -210,7 +210,6 @@
       <div id="emaSymbols">None yet</div>
     </div>
 
-
     <div class="card">
   <h2>Volume Structure Groups (24h)</h2>
   <div class="muted" style="margin-top:6px">
@@ -246,7 +245,6 @@
     <span class="muted">—</span>
   </div>
 </div>
-    
 
     <div class="card">
       <h2>Quick Test (single symbol)</h2>
@@ -467,55 +465,6 @@
 
   return null;
 }
-
-
-    function detectPostAbsorptionContinuation(klines, absorptionMatch) {
-  if (!klines || !absorptionMatch) return null;
-  if (absorptionMatch.found !== true) return null;
-  if (absorptionMatch.type !== 'absorption_lower_price') return null;
-
-  const last24h = klines.slice(-96).map(c => ({
-    open: safeNum(c.open),
-    high: safeNum(c.high),
-    low: safeNum(c.low),
-    close: safeNum(c.close),
-    vol: safeNum(c.baseVol)
-  }));
-
-  const gIdx = absorptionMatch.greenIndex24h;
-  const gHigh = absorptionMatch.greenCandle.high;
-  const gLow  = absorptionMatch.greenCandle.low;
-
-  let redRetest = false;
-  let breakdown = false;
-
-  for (let i = gIdx + 1; i < last24h.length; i++) {
-    const c = last24h[i];
-
-    // ❌ sellers tried again
-    if (c.close < c.open && c.low < gLow) {
-      redRetest = true;
-      break;
-    }
-
-    // ❌ structure failed
-    if (c.low < gLow) {
-      breakdown = true;
-      break;
-    }
-  }
-
-  if (redRetest || breakdown) return null;
-
-  // ✅ continuation confirmed
-  return {
-    found: true,
-    type: 'post_absorption_continuation',
-    label: 'Post-absorption continuation',
-    intent: 'Trend continuation',
-    baseGreenHigh: gHigh
-  };
-    }
       
       
     function detect24hVolumeLocationAI(klines){
@@ -736,7 +685,8 @@ renderAITop30(aiSorted);
       const marketSummary = analyzeMajorityContext(aiSorted);
 renderMarketContext(marketSummary);
 
-    setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
+      
+     setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
 
 const results = [];
 
@@ -761,8 +711,6 @@ for (const p of emaOkSymbols) {
 
     // detector B: red failure absorption
     const redFail = detectRedFailureAbsorption(kl);
-
-    const postAbsorb = detectPostAbsorptionContinuation(kl, match);
 
     if (!match) continue;
 
@@ -792,15 +740,6 @@ for (const p of emaOkSymbols) {
       continue; // ⬅️ IMPORTANT: do not fall through
     }
 
-    if (postAbsorb && postAbsorb.found === true) {
-  results.push({
-    symbol: p.symbol,
-    pct: p.pct,
-    match,
-    absorptionType: 'post-continuation'
-  });
-    }
-
     // 4️⃣ RED failure absorption (cooling, not breakout)
     if (redFail && redFail.found === true) {
       counts.redFail++;
@@ -818,7 +757,7 @@ for (const p of emaOkSymbols) {
     console.warn('Phase B failed:', p.symbol, e.message);
   }
 }
-
+      
     
       // update ignored lists UI
       // Top volume NOT red
@@ -849,15 +788,6 @@ document.getElementById('redFailList').innerHTML =
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
     
-    const el = document.getElementById('matches');
-      if(results.length === 0){
-        el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
-        document.getElementById('matchSummary').textContent = `0 matches`;
-        setStatus('Scan complete — no matches');
-        return;
-      }
-
-      
     const el = document.getElementById('matches');
       if(results.length === 0){
         el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;

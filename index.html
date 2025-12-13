@@ -581,10 +581,9 @@ reason: 'no_later_green_absorber'
     
 
 
-function detectAscendingRedVolumeAbsorption(
+function detectRedHighGreenLowTotalBreakout(
   klines,
-  minRedCount = 3,
-  greenBreakPct = 0.3   // 🔥 0.3 = green vol must be 30% higher
+  minRedVolRank = 0.9 // red must be top 10% volume in 24h
 ){
   if (!klines || klines.length < 96) return null;
 
@@ -597,52 +596,40 @@ function detectAscendingRedVolumeAbsorption(
     time: c.openTime
   }));
 
-  const redSeq = [];
+  // 1️⃣ Collect red candles
+  const reds = last24h
+    .filter(c => c.close < c.open)
+    .sort((a,b) => b.vol - a.vol);
 
-  // 1️⃣ Ascending red volume + descending price
-  for (let i = 1; i < last24h.length; i++) {
-    const prev = last24h[i - 1];
-    const curr = last24h[i];
+  if (!reds.length) return null;
 
-    if (
-      curr.close < curr.open &&      // red
-      prev.close < prev.open &&      // red
-      curr.vol > prev.vol &&         // volume ascending
-      curr.low < prev.low            // price descending
-    ) {
-      if (redSeq.length === 0) redSeq.push(prev);
-      redSeq.push(curr);
-    } else {
-      if (redSeq.length >= minRedCount) break;
-      redSeq.length = 0;
-    }
-  }
+  // pick red from top volume percentile
+  const pickIdx = Math.floor(reds.length * (1 - minRedVolRank));
+  const red = reds[pickIdx] || reds[0];
 
-  if (redSeq.length < minRedCount) return null;
+  // 2️⃣ Look for GREEN that totally breaks red volume
+  for (const g of last24h) {
+    if (g.time <= red.time) continue;
+    if (g.close <= g.open) continue;        // must be green
 
-  // strongest red candle
-  const topRed = redSeq.reduce((a,b)=> b.vol > a.vol ? b : a);
-  const startIdx = last24h.indexOf(redSeq[redSeq.length - 1]);
+    // 🔒 price still lower (absorption zone)
+    if (g.high > red.high) continue;
 
-  // 2️⃣ Green volume BREAKOUT
-  for (let i = startIdx + 1; i < last24h.length; i++) {
-    const g = last24h[i];
+    // 🔥 TOTAL VOLUME BREAKOUT
+    if (g.vol <= red.vol) continue;
 
-    if (g.close <= g.open) continue; // must be green
-
-    // 🔥 TRUE breakout: green vol > red vol by 50–60%
-    if (g.vol >= topRed.vol * (1 + greenBreakPct)) {
-      return {
-        found: true,
-        type: 'sell_climax_absorption',
-        label: 'Sell climax → strong green absorption',
-        intent: 'High-probability bullish reversal',
-        redSequence: redSeq,
-        topRed,
-        greenAbsorber: g,
-        greenBreakPct
-      };
-    }
+    return {
+      found: true,
+      type: 'red_high_green_low_total_breakout',
+      label: 'Sell-side climax → volume breakout',
+      intent: 'Strong accumulation / reversal',
+      redCandle: red,
+      greenCandle: g,
+      redVol: red.vol,
+      greenVol: g.vol,
+      dominance: ((g.vol / red.vol) * 100).toFixed(0) + '%',
+      priceRelation: 'green_below_red_high'
+    };
   }
 
   return null;
@@ -896,7 +883,7 @@ for (const p of emaOkSymbols) {
 
     const redFail = detectRedFailureAbsorption(kl);
     const postAbsorb = detectPostAbsorptionContinuation(kl);
-    const sellClimax = detectAscendingRedVolumeAbsorption(kl);
+    const sellClimax = detectRedHighGreenLowTotalBreakout(kl);
 
 
     // 1️⃣ Top volume NOT red

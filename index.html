@@ -495,7 +495,7 @@
 }
 
 
-    function detectPostAbsorptionContinuation(klines, absorptionMatch, ratio = 0.7) {
+    function detectPostAbsorptionContinuation(klines, absorptionMatch, ratio = 0.5) {
   if (!klines || !absorptionMatch) return null;
   if (absorptionMatch.found !== true) return null;
   if (absorptionMatch.type !== 'absorption_lower_price') return null;
@@ -512,33 +512,45 @@
   const gLow = absorptionMatch.greenCandle.low;
   const absorbedRedVol = absorptionMatch.redBaseVol;
 
-  // 🔍 look for FAILED red follow-up after green absorption
+  let maxFollowRedVol = 0;
+  let failedRed = null;
+
+  // 🔍 scan SELL attempts AFTER absorption
   for (let i = gIdx + 1; i < last24h.length; i++) {
     const c = last24h[i];
 
-    // must be red attempt
+    // ignore green candles
     if (c.close >= c.open) continue;
 
-    // ❌ sellers tried harder → structure failed
-    if (c.vol >= absorbedRedVol) return null;
-
-    // ❌ sellers broke structure
+    // ❌ structure break → invalid
     if (c.low < gLow) return null;
 
-    // ✅ seller attempt FAILED → continuation confirmed
-    if (c.vol >= absorbedRedVol * ratio) {
-      return {
-        ...absorptionMatch,
-        found: true,
-        type: 'post_absorption_continuation',
-        label: 'Post-absorption continuation',
-        intent: 'Sellers failed after absorption',
-        failedRed: c
-      };
+    // track strongest red follow-through
+    if (c.vol > maxFollowRedVol) {
+      maxFollowRedVol = c.vol;
+      failedRed = c;
     }
+
+    // ❌ sellers came back too strong
+    if (c.vol >= absorbedRedVol) return null;
   }
 
-  return null;
+  // ❌ no meaningful sell attempt
+  if (!failedRed) return null;
+
+  // ❌ follow-through too strong (not exhausted)
+  if (maxFollowRedVol > absorbedRedVol * ratio) return null;
+
+  // ✅ SELLERS FAILED AFTER ABSORPTION
+  return {
+    ...absorptionMatch,
+    found: true,
+    type: 'post_absorption_continuation',
+    label: 'Post-absorption continuation',
+    intent: 'Sellers failed after absorption',
+    failedRed,
+    maxFollowRedVol
+  };
 }
       
     function detect24hVolumeLocationAI(klines){

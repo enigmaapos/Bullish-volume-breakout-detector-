@@ -805,19 +805,19 @@ for (const p of emaOkSymbols) {
     if (match.found === true && match.type === 'absorption_lower_price') {
 
       // 🟢🟢 3a️⃣ POST-ABSORPTION CONTINUATION (highest priority)
-      if (postAbsorb && postAbsorb.found === true) {
-        counts.postCont++;
-        postContSymbols.push(p.symbol);
+if (postAbsorb && postAbsorb.found === true) {
+  counts.postCont++;
+  postContSymbols.push(p.symbol);
 
-        results.push({
-          symbol: p.symbol,
-          pct: p.pct,
-          match: postAbsorb,
-          absorptionType: 'post-continuation'
-        });
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match, // ✅ KEEP ORIGINAL ABSORPTION STRUCTURE
+    absorptionType: 'post-continuation'
+  });
 
-        continue;
-      }
+  continue;
+}
 
       // 🟢 3b️⃣ Normal green absorption
       counts.greenAbsorb++;

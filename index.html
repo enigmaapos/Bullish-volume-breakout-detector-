@@ -403,29 +403,38 @@
           redCount24h: redCount
         };
       }
-      if(g.high >= dayHigh){
-        return {
-          found: false,
-          reason: 'green_made_day_high',
-          redIndex24h: topIdx, redCandle: topC,
-          greenIndex24h: firstGreen.idx, greenCandle: g,
-          redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
-          dayHigh,
-          redCount24h: redCount
-        };
-      }
-      return {
-        found: true,
-        redIndex24h: topIdx,
-        redCandle: topC,
-        greenIndex24h: firstGreen.idx,
-        greenCandle: g,
-        redBaseVol: topC.baseVol,
-        greenBaseVol: g.baseVol,
-        dayHigh,
-        redCount24h: redCount
-      };
-    }
+      // 🔴🟢 Absorption at lower price (VALID but NOT breakout)
+if (g.high < topC.high) {
+  return {
+    found: true,                       // still a valid detection
+    type: 'absorption_lower_price',    // NEW classification
+    intent: 'Cooling / Re-accumulation',
+    strength: 'Moderate',
+    redIndex24h: topIdx,
+    redCandle: topC,
+    greenIndex24h: firstGreen.idx,
+    greenCandle: g,
+    redBaseVol: topC.baseVol,
+    greenBaseVol: g.baseVol,
+    dayHigh,
+    redCount24h: redCount
+  };
+}
+      // 🟢 True breakout absorption
+return {
+  found: true,
+  type: 'breakout_absorption',
+  intent: 'Bullish continuation',
+  strength: 'Strong',
+  redIndex24h: topIdx,
+  redCandle: topC,
+  greenIndex24h: firstGreen.idx,
+  greenCandle: g,
+  redBaseVol: topC.baseVol,
+  greenBaseVol: g.baseVol,
+  dayHigh,
+  redCount24h: redCount
+};
 
     function detect24hVolumeLocationAI(klines){
   if (!klines || klines.length < 96) return null;

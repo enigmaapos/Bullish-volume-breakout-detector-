@@ -1,0 +1,1317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Volume Break Detector — require top-24h candle to be RED</title>
+  <style>
+    /* Base */
+    :root{
+      --bg:#0f1720;
+      --card:#0b1220;
+      --muted:#9fb3cc;
+      --accent:#2dd4bf;
+      --pill:#071722;
+      --pill-border: rgba(255,255,255,.03);
+      --text:#e6eef8;
+      --shadow: 0 6px 18px rgba(0,0,0,.6);
+    }
+    html,body{height:100%;margin:0}
+    body{
+      font-family:Inter, system-ui, Arial, sans-serif;
+      margin:12px;
+      background:var(--bg);
+      color:var(--text);
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      box-sizing:border-box;
+    }
+    *,*::before,*::after{box-sizing:inherit}
+
+    /* Centered responsive page */
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 10px;
+    }
+
+    .card{
+      background:var(--card);
+      padding:14px;
+      border-radius:10px;
+      box-shadow:var(--shadow);
+      margin-bottom:12px;
+      overflow:hidden; /* keeps content inside */
+    }
+    h1{font-size:18px;margin:0 0 8px}
+    h2{margin:0 0 8px;font-size:16px}
+    small{color:var(--muted)}
+
+    /* Controls - responsive grid */
+    .controls {
+      display:grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap:8px;
+      align-items:center;
+    }
+    .controls label{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .controls input[type="number"],
+    .controls input[type="text"],
+    .controls select,
+    textarea{background:#081226;color:var(--text);border:1px solid rgba(255,255,255,.04);padding:6px;border-radius:6px;width:100%}
+
+    button{
+      background:#111827;color:var(--text);padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.04);cursor:pointer;
+      min-height:36px;
+    }
+
+    .debug{font-size:13px;color:var(--muted);margin-top:8px}
+    .notify{padding:8px;border-radius:6px;background:#072a1d;color:#bff3e8;margin-bottom:8px}
+
+    /* Table responsive wrapper */
+    .table-wrap{
+      overflow-x:auto;
+      -webkit-overflow-scrolling: touch;
+      margin-top:8px;
+      border-radius:8px;
+    }
+    table{width:100%;border-collapse:collapse;min-width:700px}
+    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);text-align:left;white-space:nowrap}
+    td small{display:block;color:var(--muted)}
+
+    /* Pills / lists */
+    .list-inline{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+    .pill{
+      background:var(--pill);
+      padding:6px 8px;border-radius:8px;border:1px solid var(--pill-border);
+      cursor:pointer;font-size:13px;
+      user-select:none;
+      max-width:120px;
+      text-overflow:ellipsis;
+      overflow:hidden;
+      white-space:nowrap;
+    }
+    .pill:active{transform:translateY(1px)}
+    .section-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
+
+    /* small helpers */
+    .muted{color:var(--muted)}
+    .ok{color:var(--accent)}
+    .warn{color:#f59e0b}
+    .bad{color:#fb7185}
+    .match-row{background:linear-gradient(90deg, rgba(45,212,191,0.04), transparent)}
+
+    pre{white-space:pre-wrap; max-height:220px; overflow:auto; background:#07101a;padding:8px;border-radius:6px;color:var(--muted)}
+
+    /* Responsive tweaks for small screens */
+    @media (max-width:900px){
+      .card{padding:12px;border-radius:8px}
+      h1{font-size:16px}
+      h2{font-size:15px}
+      table{min-width:640px}
+      .pill{max-width:110px;font-size:12px}
+    }
+    @media (max-width:560px){
+      body{margin:8px}
+      .controls{grid-template-columns:1fr} /* stack controls */
+      .controls label{width:100%}
+      .card{padding:10px}
+      h1{font-size:15px}
+      table{min-width:540px}
+      th,td{padding:6px}
+      .pill{max-width:90px;font-size:12px}
+      button{width:100%}
+      .section-title{flex-direction:column;align-items:flex-start;gap:6px}
+    }
+
+    /* Accessibility focus */
+    .pill:focus,.pill:hover{outline:none;border-color:rgba(255,255,255,.12)}
+    button:focus{outline:2px solid rgba(45,212,191,.12)}
+
+    /* ===== AI TABLE COLORS ===== */
+
+/* Probability */
+.prob-high { color:#22c55e; font-weight:700; }   /* green */
+.prob-good { color:#eab308; font-weight:700; }   /* yellow */
+.prob-mid  { color:#fb923c; }                    /* orange */
+.prob-low  { color:#ef4444; }                    /* red */
+
+/* Volume color */
+.vol-green { color:#22c55e; font-weight:600; }
+.vol-red   { color:#ef4444; font-weight:600; }
+
+/* Location */
+.loc-low  { color:#22c55e; }
+.loc-mid  { color:#eab308; }
+.loc-high { color:#ef4444; }
+
+/* Meaning */
+.mean-bull    { color:#22c55e; }
+.mean-bear    { color:#ef4444; }
+.mean-caution { color:#eab308; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <h1>Volume Break Detector — require top-24h candle to be RED</h1>
+      <p class="muted">Only proceeds when the single highest <strong>base Vol</strong> candle in the last 24h is a red candle. Then looks for the earliest green that breaks that red's baseVol. This version shows ignored groups and the full list of top-24h red-volume symbols.</p>
+      
+      <div class="controls" style="margin-top:8px">
+        <label>Top N: <input id="topN" type="number" value="30" min="1" max="200" /></label>
+        <label>Polling (sec): <input id="pollSec" type="number" value="60" min="10" /></label>
+        <label>Batch size: <input id="batchSize" type="number" value="3" min="1" max="8" /></label>
+        <label>Vol ratio (green >= red *): <input id="volRatio" type="number" value="1.0" step="0.1" /></label>
+        <label style="display:flex;align-items:center;gap:8px"><input id="autoOpen" type="checkbox" /> Auto-open on match</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="startBtn">Start</button>
+          <button id="stopBtn" disabled>Stop</button>
+        </div>
+        <div style="display:flex;align-items:center"><small id="status">Idle</small></div>
+      </div>
+
+      <div class="debug" id="debugLine">Debug: —</div>
+      <div style="margin-top:8px">
+        <small id="blacklistInfo">Blacklist: 0 symbols filtered</small> &nbsp;•&nbsp;
+        <small id="topInfo">Top-N selected: 0</small> &nbsp;•&nbsp;
+        <small id="emaInfo">EMA-OK: 0 (last close > EMA200)</small>
+      </div>
+    </div>
+
+    <div style="margin-top:10px; display:flex; gap:14px; flex-wrap:wrap">
+  <small><strong>24h Green:</strong> <span id="cntGreen24h">—</span></small>
+  <small><strong>24h Red:</strong> <span id="cntRed24h">—</span></small>
+  <small><strong>Dominance:</strong> <span id="dominance24h">—</span></small>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <h2>Matches</h2>
+        <small id="matchSummary">—</small>
+      </div>
+      <div id="matches">No results yet</div>
+    </div>
+
+    <div class="card">
+  <h2>Market Volume Context (Top 30)</h2>
+  <div id="marketContext">—</div>
+    </div>
+
+    <div class="card">
+  <div class="section-title">
+    <h2>Top 30 — Highest 24h Volume (AI Context)</h2>
+    <small>Highest volume candle per symbol (red or green)</small>
+  </div>
+  <div id="aiTop30Results">No data yet</div>
+    </div>
+
+    <div class="card">
+      <h2>EMA-Positive Symbols (phase A)</h2>
+      <div id="emaSymbols">None yet</div>
+    </div>
+
+
+    <div class="card">
+  <h2>Volume Structure Groups (24h)</h2>
+  <div class="muted" style="margin-top:6px">
+    Classification based on the highest-volume candle in the last 24h and its reaction.
+  </div>
+
+  <!-- Top volume NOT red -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>Top volume is NOT red</strong>
+      (<span id="cntTopNotRed">0</span>):
+    </div>
+    <div id="topNotRedList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
+  </div>
+
+  <!-- Top volume IS red -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>Top volume IS red</strong>
+      (<span id="cntTopRed">0</span>):
+    </div>
+    <div id="topRedList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
+  </div>
+
+  <!-- Green absorption -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>🟢 Green absorption (re-accumulation)</strong>
+      (<span id="cntGreenAbsorb">0</span>):
+    </div>
+    <div id="greenAbsorbList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
+  </div>
+
+  <!-- Post-absorption continuation -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>🟢🟢 Post-absorption continuation</strong>
+      (<span id="cntPostCont">0</span>):
+    </div>
+    <div id="postContList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
+  </div>
+
+      <!-- Sell climax absorption -->
+<div style="margin-top:10px">
+  <div>
+    <strong>🔴➡🟢 Sell climax absorption</strong>
+    (<span id="cntSellClimax">0</span>):
+  </div>
+  <div id="sellClimaxList" class="list-inline">
+    <span class="muted">—</span>
+  </div>
+</div>
+
+  <!-- Red failure absorption -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>🟡 Red failure absorption (cooling)</strong>
+      (<span id="cntRedFail">0</span>):
+    </div>
+    <div id="redFailList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
+  </div>
+</div>
+    
+
+    <div class="card">
+      <h2>Quick Test (single symbol)</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="testSymbol" value="BTCUSDT" style="min-width:140px"/> <button id="testBtn">Test Symbol</button>
+        <small id="testStatus">—</small>
+      </div>
+      <pre id="testOut"></pre>
+    </div>
+
+    <div class="card">
+      <h2>Blacklist (editable)</h2>
+      <textarea id="blacklistArea" rows="6" style="width:100%;font-family:monospace"></textarea>
+      <div style="margin-top:8px"><button id="updateBlacklistBtn">Update Blacklist</button></div>
+    </div>
+  </div>
+
+  <script>
+    /* ---------------------------
+       Your JS logic kept intact (only minor helpers added below)
+    */
+    let blacklist = [
+      "ALPACAUSDT","BNXUSDT","ALPHAUSDT","OCEANUSDT","DGBUSDT","AGIXUSDT","LINAUSDT",
+      "LOKAUSDT","KEYUSDT","MDTUSDT","LOOMUSDT","RENUSDT","OMNIUSDT","SLERFUSDT",
+      "STMXUSDT","UXLINKUSDT","BSWUSDT","NEIROETHUSDT","VIDTUSDT","TROYUSDT",
+      "BAKEUSDT","AMBUSDT","MEMEFIUSDT","NULSUSDT","HIFIUSDT","LEVERUSDT","XEMUSDT",
+      "STRAXUSDT","COMBOUSDT","AI16ZUSDT","MILKUSDT","TOKENUSDT","SXPUSDT","MYROUSDT","1000XUSDT","DARUSDT"
+    ];
+
+    document.addEventListener('DOMContentLoaded', ()=> {
+      document.getElementById('blacklistArea').value = blacklist.join('\n');
+      document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
+    });
+
+    const API_BASE = 'https://fapi.binance.com';
+    const INTERVAL = '15m';
+    const KLINES_LIMIT = 300;
+    let controller = { running:false };
+
+    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+    function safeNum(v){ return Number(String(v)); }
+    function fmt(n){ if(n == null || isNaN(n)) return '-'; if(n >= 1e9) return (n/1e9).toFixed(2)+'B'; if(n >= 1e6) return (n/1e6).toFixed(2)+'M'; if(n >= 1e3) return (n/1e3).toFixed(2)+'K'; return Number(n).toLocaleString(); }
+    function fmtPrice(p){ if(p==null) return '-'; return Number(p).toPrecision(6); }
+    function fmtTime(ms){ try{ return new Date(ms).toLocaleString(); }catch(e){ return String(ms); } }
+
+    async function batchMap(items, fn, batchSize=3, delayMs=700){
+      const out=[];
+      for(let i=0;i<items.length;i+=batchSize){
+        const batch = items.slice(i,i+batchSize);
+        const promises = batch.map(x=>fn(x).catch(e=>({__err:e.message||String(e)})));
+        const res = await Promise.all(promises);
+        out.push(...res);
+        if(i+batchSize < items.length) await sleep(delayMs);
+      }
+      return out;
+    }
+
+    function calcEMA(period, prices){
+      const k = 2 / (period + 1);
+      const out = new Array(prices.length).fill(null);
+      if(prices.length === 0) return out;
+      let seedSum = 0;
+      const seedCount = Math.min(period, prices.length);
+      for(let i=0;i<seedCount;i++) seedSum += prices[i];
+      out[seedCount-1] = seedSum / seedCount;
+      for(let i=seedCount;i<prices.length;i++){
+        out[i] = (prices[i] - out[i-1]) * k + out[i-1];
+      }
+      return out;
+    }
+    function isLastCloseAboveEMA200(klines){
+      const closes = klines.map(k => safeNum(k.close));
+      if(closes.length < 210) return false;
+      const ema200 = calcEMA(200, closes);
+      const lastIdx = closes.length - 1;
+      const lastEMA200 = ema200[lastIdx];
+      const lastClose = closes[lastIdx];
+      if(lastEMA200 == null) return false;
+      return lastClose > lastEMA200;
+    }
+
+    async function fetchKlines(symbol){
+      const url = `${API_BASE}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&limit=${KLINES_LIMIT}`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('klines failed: '+res.status+' for '+symbol);
+      const data = await res.json();
+      return data.map(c=>({
+        openTime: c[0],
+        open: c[1],
+        high: c[2],
+        low: c[3],
+        close: c[4],
+        baseVol: c[5],
+        closeTime: c[6],
+        quoteVol: (c[7] !== undefined && c[7] !== null) ? c[7] : null,
+        trades: c[8]
+      }));
+    }
+
+    // detector (kept same as in your last version)
+    function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
+  if (!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    openTime: c.openTime,
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    baseVol: safeNum(c.baseVol)
+  }));
+
+  // 1️⃣ Find highest-volume candle in 24h
+  let top = last24h[0];
+  let topIdx = 0;
+
+  for (let i = 1; i < last24h.length; i++) {
+    if (last24h[i].baseVol > top.baseVol) {
+      top = last24h[i];
+      topIdx = i;
+    }
+  }
+
+  // Must be RED
+  if (top.close >= top.open) {
+    return {
+      found: false,
+      reason: 'top_volume_not_red',
+      topCandle: top
+    };
+  }
+
+  // 2️⃣ Look for GREEN absorber AFTER it
+  for (let j = topIdx + 1; j < last24h.length; j++) {
+    const g = last24h[j];
+
+    if (g.close <= g.open) continue;                 // must be green
+    if (g.baseVol < top.baseVol * volRatio) continue; // must absorb volume
+
+    // ✅ THIS IS YOUR ONLY VALID CONDITION
+    if (g.high < top.high) {
+      return {
+        found: true,
+        type: 'absorption_lower_price',
+        intent: 'Cooling / Re-accumulation',
+        strength: 'Moderate',
+        redIndex24h: topIdx,
+        redCandle: top,
+        greenIndex24h: j,
+        greenCandle: g,
+        redBaseVol: top.baseVol,
+        greenBaseVol: g.baseVol
+      };
+    }
+
+    // If volume breaks but price goes higher → ignore
+    return {
+      found: false,
+      reason: 'volume_break_but_price_higher'
+    };
+  }
+
+  return {
+    found: false,
+    reason: 'no_later_green_absorber'
+  };
+    }
+
+    function detectRedFailureAbsorption(klines, ratio = 0.6){
+  if(!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    vol: safeNum(c.baseVol),
+    time: c.openTime
+  }));
+
+  // find highest red volume candle
+  let topRed = null;
+  let topIdx = -1;
+
+  for(let i=0;i<last24h.length;i++){
+    const c = last24h[i];
+    if(c.close < c.open){
+      if(!topRed || c.vol > topRed.vol){
+        topRed = c;
+        topIdx = i;
+      }
+    }
+  }
+
+  if(!topRed) return null;
+
+  // check later red attempts
+  for(let j = topIdx + 1; j < last24h.length; j++){
+    const r = last24h[j];
+    if(r.close >= r.open) continue;
+
+    // strong but FAILED sell attempt
+    if(
+      r.vol >= topRed.vol * ratio &&
+      r.vol < topRed.vol &&
+      r.low >= topRed.low
+    ){
+      return {
+        found: true,
+        type: 'sell_absorption',
+        label: 'Bullish consolidation / cooling',
+        intent: 'Sellers absorbed',
+        topRed,
+        failedRed: r
+      };
+    }
+  }
+
+  return null;
+}
+
+
+    function detectPostAbsorptionContinuation(klines, greenRatio = 0.75, redFailRatio = 0.5){
+  if(!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    vol: safeNum(c.baseVol),
+    time: c.openTime
+  }));
+
+  // 1️⃣ Highest RED volume (24h)
+  let topRed = null;
+  let redIdx = -1;
+
+  for(let i=0;i<last24h.length;i++){
+    const c = last24h[i];
+    if(c.close < c.open){
+      if(!topRed || c.vol > topRed.vol){
+        topRed = c;
+        redIdx = i;
+      }
+    }
+  }
+
+  if(!topRed) return null;
+
+  // 2️⃣ Green absorption (75–80%)
+  let green = null;
+  let greenIdx = -1;
+
+  for(let i = redIdx + 1; i < last24h.length; i++){
+    const c = last24h[i];
+    if(c.close > c.open && c.vol >= topRed.vol * greenRatio){
+      green = c;
+      greenIdx = i;
+      break;
+    }
+  }
+
+  if(!green) return null;
+
+  // 3️⃣ Failed red follow-through
+  for(let i = greenIdx + 1; i < last24h.length; i++){
+    const r = last24h[i];
+
+    if(r.close >= r.open) continue;
+
+    // ❌ sellers regained strength
+    if(r.vol >= topRed.vol * redFailRatio) return null;
+
+    // ❌ structure lost
+    if(r.low < green.low) return null;
+  }
+
+  // ✅ POST-ABSORPTION CONTINUATION
+  return {
+    found: true,
+    type: 'post_absorption_continuation',
+    label: 'Post-absorption continuation',
+    intent: 'Trend continuation',
+    topRed,
+    greenAbsorb: green
+  };
+}
+    
+
+
+function detectAscendingRedVolumeAbsorption(
+  klines,
+  minRedCount = 3,
+  greenBreakPct = 0.3   // 🔥 0.3 = green vol must be 30% higher
+){
+  if (!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    vol: safeNum(c.baseVol),
+    time: c.openTime
+  }));
+
+  const redSeq = [];
+
+  // 1️⃣ Ascending red volume + descending price
+  for (let i = 1; i < last24h.length; i++) {
+    const prev = last24h[i - 1];
+    const curr = last24h[i];
+
+    if (
+      curr.close < curr.open &&      // red
+      prev.close < prev.open &&      // red
+      curr.vol > prev.vol &&         // volume ascending
+      curr.low < prev.low            // price descending
+    ) {
+      if (redSeq.length === 0) redSeq.push(prev);
+      redSeq.push(curr);
+    } else {
+      if (redSeq.length >= minRedCount) break;
+      redSeq.length = 0;
+    }
+  }
+
+  if (redSeq.length < minRedCount) return null;
+
+  // strongest red candle
+  const topRed = redSeq.reduce((a,b)=> b.vol > a.vol ? b : a);
+  const startIdx = last24h.indexOf(redSeq[redSeq.length - 1]);
+
+  // 2️⃣ Green volume BREAKOUT
+  for (let i = startIdx + 1; i < last24h.length; i++) {
+    const g = last24h[i];
+
+    if (g.close <= g.open) continue; // must be green
+
+    // 🔥 TRUE breakout: green vol > red vol by 50–60%
+    if (g.vol >= topRed.vol * (1 + greenBreakPct)) {
+      return {
+        found: true,
+        type: 'sell_climax_absorption',
+        label: 'Sell climax → strong green absorption',
+        intent: 'High-probability bullish reversal',
+        redSequence: redSeq,
+        topRed,
+        greenAbsorber: g,
+        greenBreakPct
+      };
+    }
+  }
+
+  return null;
+}
+    
+      
+    function detect24hVolumeLocationAI(klines){
+  if (!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    baseVol: safeNum(c.baseVol),
+    openTime: c.openTime
+  }));
+
+  let dayHigh = -Infinity;
+  let dayLow  = Infinity;
+
+  for (const c of last24h) {
+    if (c.high > dayHigh) dayHigh = c.high;
+    if (c.low  < dayLow)  dayLow  = c.low;
+  }
+
+  // find highest volume candle
+  let top = last24h[0];
+  for (const c of last24h) {
+    if (c.baseVol > top.baseVol) top = c;
+  }
+
+  const isRed   = top.close < top.open;
+  const isGreen = top.close > top.open;
+
+  // location logic
+  const range = dayHigh - dayLow;
+  const mid = dayLow + range * 0.5;
+
+  let location = 'MID';
+  if (top.high <= mid) location = 'LOW';
+  else if (top.low >= mid) location = 'HIGH';
+
+  // AI interpretation
+  let meaning = 'Neutral';
+  let bias = 'Neutral';
+
+  if (isRed && location === 'LOW') {
+    meaning = 'Sell exhaustion → bullish';
+    bias = 'Bullish';
+  } else if (isRed && location === 'HIGH') {
+    meaning = 'Distribution → bearish';
+    bias = 'Bearish';
+  } else if (isGreen && location === 'LOW') {
+    meaning = 'Initiative buying → bullish';
+    bias = 'Bullish';
+  } else if (isGreen && location === 'HIGH') {
+    meaning = 'Buy climax → caution';
+    bias = 'Caution';
+  }
+
+  return {
+    color: isRed ? 'RED' : 'GREEN',
+    location,
+    meaning,
+    bias,
+    volume: top.baseVol,
+    time: top.openTime,
+    high: top.high,
+    low: top.low
+  };
+}
+
+    // notification helpers (unchanged)
+    async function makeBeep(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+
+    o.type = 'square';          // sharper = bep
+    o.frequency.value = 1200;   // higher pitch
+
+    // fast attack, fast decay
+    g.gain.setValueAtTime(0.05, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(
+      0.001,
+      ctx.currentTime + 0.06    // ~60ms total
+    );
+
+    o.connect(g);
+    g.connect(ctx.destination);
+
+    o.start();
+    o.stop(ctx.currentTime + 0.06);
+
+    setTimeout(() => ctx.close(), 80);
+  }catch(e){
+    console.warn('bep failed', e);
+  }
+    }
+     function notifyUser(title, body, symbol){
+      if(window.Notification && Notification.permission === 'granted'){ const n = new Notification(title, { body }); n.onclick = ()=>{ window.focus(); openSymbol(symbol); }; }
+      const matchesEl = document.getElementById('matches');
+      const note = document.createElement('div');
+      note.className = 'notify';
+      note.innerHTML = `<strong>${title}</strong> — ${body} <div style="margin-top:6px"><button onclick="openSymbol('${symbol}')">Open on Binance</button> <button onclick="copySym('${symbol}')">Copy</button></div>`;
+      matchesEl.prepend(note);
+      makeBeep();
+    }
+    function openSymbol(sym){ window.open(`https://www.binance.com/en/futures/${sym}`, '_blank'); }
+    function copySym(sym){ navigator.clipboard?.writeText(sym).then(()=>alert(sym+' copied')).catch(()=>alert('copy failed')); }
+
+    // main scan driver (keeps the same behavior)
+    function setStatus(s){ document.getElementById('status').textContent = s; }
+    function setDebug(s){ document.getElementById('debugLine').textContent = 'Debug: '+s; }
+
+    async function fetch24hrAll(){ const res = await fetch(API_BASE + '/fapi/v1/ticker/24hr'); if(!res.ok) throw new Error('24hr fetch failed: '+res.status); return res.json(); }
+
+    async function runScan(){
+      setStatus('Fetching 24h tickers (phase A list)...');
+      let tickers;
+      try{ tickers = await fetch24hrAll(); }catch(e){ console.error(e); setStatus('24hr fetch error'); document.getElementById('matches').innerText = 'Fetch error: '+e.message; return; }
+
+      // =====================
+// 24h MARKET DOMINANCE
+// =====================
+const usdtAll = tickers.filter(t =>
+  typeof t.symbol === 'string' &&
+  t.symbol.endsWith('USDT') &&
+  !t.symbol.includes('_')
+);
+
+let green24h = 0;
+let red24h = 0;
+
+for (const t of usdtAll) {
+  const pct = safeNum(t.priceChangePercent);
+  if (pct > 0) green24h++;
+  else if (pct < 0) red24h++;
+}
+
+const total24h = green24h + red24h;
+const greenPct = total24h ? ((green24h / total24h) * 100).toFixed(1) : '0';
+const redPct   = total24h ? ((red24h   / total24h) * 100).toFixed(1) : '0';
+
+document.getElementById('cntGreen24h').textContent = `${green24h} (${greenPct}%)`;
+document.getElementById('cntRed24h').textContent   = `${red24h} (${redPct}%)`;
+
+let domText = 'Neutral';
+if (green24h > red24h) domText = `🟢 Bulls (${greenPct}%)`;
+else if (red24h > green24h) domText = `🔴 Bears (${redPct}%)`;
+
+document.getElementById('dominance24h').textContent = domText;
+      
+      const topN = Math.max(1, Math.min(200, Number(document.getElementById('topN').value || 30)));
+      const greenPairsAll = tickers.filter(t => typeof t.symbol === 'string' && t.symbol.endsWith('USDT'))
+        .filter(t => safeNum(t.priceChangePercent) > 0)
+        .map(t=>({symbol:t.symbol, pct:safeNum(t.priceChangePercent)}));
+      greenPairsAll.sort((a,b)=> b.pct - a.pct);
+      const topCandidates = greenPairsAll.slice(0, topN);
+      const topAfterBlacklist = topCandidates.filter(p => !blacklist.includes(p.symbol));
+      const filteredCount = topCandidates.length - topAfterBlacklist.length;
+      document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered — ${filteredCount} removed from top${topN}`;
+      document.getElementById('topInfo').textContent = `Top-N selected: ${topCandidates.length} (after blacklist: ${topAfterBlacklist.length})`;
+      setDebug(`topCandidates=${topCandidates.length} (first 8): ${topCandidates.slice(0,8).map(x=>x.symbol).join(', ')}`);
+      if(topAfterBlacklist.length === 0){ setStatus('No top-N green pairs'); document.getElementById('matches').innerText='No top-N pairs'; return; }
+
+      setStatus('Phase A: fetch klines & EMA200 filter...');
+      const batchSize = Number(document.getElementById('batchSize').value) || 3;
+      const volRatio = Math.max(0.1, Number(document.getElementById('volRatio').value) || 1.0);
+
+      const emaOkSymbols = [];
+      const klinesMap = {};
+      let fetchFailed = 0;
+
+      await batchMap(topAfterBlacklist, async (p) => {
+        try{
+          const kl = await fetchKlines(p.symbol);
+          const emaOk = isLastCloseAboveEMA200(kl);
+          if(emaOk){ emaOkSymbols.push({symbol:p.symbol, pct:p.pct}); klinesMap[p.symbol] = kl; }
+          return true;
+        }catch(e){ console.warn('fetch failed', p.symbol, e.message); fetchFailed++; return {symbol:p.symbol,__err:e.message}; }
+      }, batchSize, 700);
+
+      setDebug(`EMA-OK count: ${emaOkSymbols.length}`);
+      document.getElementById('emaInfo').textContent = `EMA-OK: ${emaOkSymbols.length} (last close > EMA200) — fetch failed: ${fetchFailed}`;
+      document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
+
+      if(emaOkSymbols.length === 0){ setStatus('No EMA-OK'); document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected (fetch failed: ${fetchFailed})</div>`; return; }
+     
+      // =====================
+// TOP 30 AI CONTEXT LIST
+// =====================
+const aiTop30 = [];
+
+for(const p of topAfterBlacklist){
+  try{
+    const kl = klinesMap[p.symbol] || await fetchKlines(p.symbol);
+    const volAI = detect24hVolumeLocationAI(kl);
+
+    if(volAI){
+      aiTop30.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        volAI,
+        probability: scoreVolumeAI(volAI) // ✅ FIX
+      });
+    }
+  }catch(e){
+    console.warn('AI context failed:', p.symbol);
+  }
+}
+      
+const aiSorted = [...aiTop30]
+  .sort((a,b) => b.probability - a.probability)
+  .slice(0, 30);
+
+renderAITop30(aiSorted);
+
+      const marketSummary = analyzeMajorityContext(aiSorted);
+renderMarketContext(marketSummary);
+
+    setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
+
+const results = [];
+
+const counts = {
+  topNotRed: 0,
+  topRed: 0,
+  greenAbsorb: 0,
+  postCont: 0,
+  redFail: 0,
+  sellClimax: 0
+};
+
+const topNotRedSymbols = [];
+const topRedSymbols = [];
+const greenAbsorbSymbols = [];
+const postContSymbols = [];
+const redFailSymbols = [];
+const sellClimaxSymbols = [];
+
+for (const p of emaOkSymbols) {
+  try {
+    const kl = klinesMap[p.symbol];
+
+    const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+    if (!match) continue;
+
+    const redFail = detectRedFailureAbsorption(kl);
+    const postAbsorb = detectPostAbsorptionContinuation(kl);
+    const sellClimax = detectAscendingRedVolumeAbsorption(kl);
+
+
+    // 1️⃣ Top volume NOT red
+    if (match.reason === 'top_volume_not_red') {
+      counts.topNotRed++;
+      topNotRedSymbols.push(p.symbol);
+      continue;
+    }
+
+    // 2️⃣ Top volume IS red
+    counts.topRed++;
+    topRedSymbols.push(p.symbol);
+
+    // 3️⃣ GREEN absorption (base event)
+if (match.found === true && match.type === 'absorption_lower_price') {
+  counts.greenAbsorb++;
+  greenAbsorbSymbols.push(p.symbol);
+
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match,
+    absorptionType: 'green'
+  });
+}
+
+// 🟢🟢 POST-ABSORPTION CONTINUATION (independent confirmation)
+if (postAbsorb && postAbsorb.found === true) {
+  counts.postCont++;
+  postContSymbols.push(p.symbol);
+
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match: postAbsorb,
+    absorptionType: 'post-continuation'
+  });
+}
+
+    if (sellClimax && sellClimax.found) {
+  counts.sellClimax++;
+  sellClimaxSymbols.push(p.symbol);
+
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match: sellClimax,
+    absorptionType: 'sell-climax'
+  });
+}
+
+    // 4️⃣ RED failure absorption (cooling / compression)
+    if (redFail && redFail.found === true) {
+      counts.redFail++;
+      redFailSymbols.push(p.symbol);
+
+      results.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        match: redFail,
+        absorptionType: 'red-failure'
+      });
+    }
+
+  } catch (e) {
+    console.warn('Phase B failed:', p.symbol, e.message);
+  }
+}  
+       
+    
+      // update ignored lists UI
+document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
+document.getElementById('topNotRedList').innerHTML =
+  topNotRedSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+document.getElementById('cntTopRed').textContent = counts.topRed;
+document.getElementById('topRedList').innerHTML =
+  topRedSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+document.getElementById('cntGreenAbsorb').textContent = counts.greenAbsorb;
+document.getElementById('greenAbsorbList').innerHTML =
+  greenAbsorbSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+document.getElementById('cntPostCont').textContent = counts.postCont;
+document.getElementById('postContList').innerHTML =
+  postContSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+document.getElementById('cntRedFail').textContent = counts.redFail;
+document.getElementById('redFailList').innerHTML =
+  redFailSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+  document.getElementById('cntSellClimax').textContent = counts.sellClimax;
+document.getElementById('sellClimaxList').innerHTML =
+  sellClimaxSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+      
+    const el = document.getElementById('matches');
+      if(results.length === 0){
+        el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
+        document.getElementById('matchSummary').textContent = `0 matches`;
+        setStatus('Scan complete — no matches');
+        return;
+      }
+
+      let html = `
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+  <th>Symbol</th>
+  <th>24h%</th>
+  <th>RedCount(24h)</th>
+  <th>Red time</th>
+  <th>Red Vol</th>
+  <th>Red high</th>
+  <th>Green time</th>
+  <th>Green Vol</th>
+  <th>Green high</th>
+  <th>Vol AI</th>
+  <th>Meaning</th>
+  <th>Actions</th>
+</tr>
+</thead>
+<tbody>
+`;
+      
+      for (const r of results) {
+  const m = r.match;
+
+  // 🛡️ HARD GUARD — prevents undefined.high crash
+  if (!m || !m.redCandle || !m.greenCandle) {
+    console.warn('Invalid match skipped:', r.symbol, r);
+    continue;
+  }
+
+  // 🔔 ONLY GREEN ABSORPTION NOTIFICATION
+  if (r.absorptionType === 'green') {
+    notifyUser(
+      '🟢 Green Absorption: ' + r.symbol,
+      `Sell pressure absorbed — re-accumulation
+RedVol: ${fmt(m.redBaseVol)} → GreenVol: ${fmt(m.greenBaseVol)}`,
+      r.symbol
+    );
+  }
+
+  html += `<tr class="match-row">
+    <td>${r.symbol}</td>
+    <td>${Number(r.pct).toFixed(2)}%</td>
+    <td>${m.redCount24h ?? '-'}</td>
+    <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
+    <td>${fmt(m.redBaseVol)}</td>
+    <td>${fmtPrice(m.redCandle.high)}</td>
+    <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
+    <td class="ok">${fmt(m.greenBaseVol)}</td>
+    <td>${fmtPrice(m.greenCandle.high)}</td>
+
+    <td>${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}</td>
+    <td>${r.volAI ? r.volAI.meaning : '-'}</td>
+
+    <td>
+      <button onclick="openSymbol('${r.symbol}')">Open</button>
+    </td>
+  </tr>`;
+}
+      
+      html += '</tbody></table></div>';
+      el.innerHTML = html;
+      window._lastMatches = results;
+      document.getElementById('matchSummary').textContent = `${results.length} matches`;
+      setStatus('Scan complete — matches: '+results.length);
+    }
+
+    function last24IndexToAbsTime(idx24, fullKlines){
+      try{
+        const offset = Math.max(0, fullKlines.length - 96);
+        const pos = offset + idx24;
+        return fullKlines[pos] ? fullKlines[pos].openTime : null;
+      }catch(e){ return null; }
+    }
+
+    function scoreVolumeAI(volAI){
+  if(!volAI) return 0;
+
+  let score = 50; // neutral baseline
+
+  // Core bias
+  if(volAI.bias === 'Bullish') score += 25;
+  if(volAI.bias === 'Bearish') score -= 25;
+  if(volAI.bias === 'Caution') score -= 10;
+
+  // Location weighting
+  if(volAI.location === 'LOW') score += 10;
+  if(volAI.location === 'HIGH') score -= 10;
+
+  // Color confirmation
+  if(volAI.color === 'GREEN') score += 5;
+  if(volAI.color === 'RED') score -= 5;
+
+  // Clamp 0–100
+  return Math.max(0, Math.min(100, score));
+    }
+
+
+    function interpretProbability(p){
+  if(p >= 80) return {
+    label: 'Strong continuation',
+    note: 'Accumulation / Trend healthy',
+    cls: 'prob-high'
+  };
+  if(p >= 65) return {
+    label: 'Continuation likely',
+    note: 'Trend still supported',
+    cls: 'prob-good'
+  };
+  if(p >= 50) return {
+    label: 'Neutral / transition',
+    note: 'Wait for confirmation',
+    cls: 'prob-mid'
+  };
+  if(p >= 35) return {
+    label: 'Exhaustion forming',
+    note: 'Pullback or range likely',
+    cls: 'prob-low'
+  };
+  return {
+    label: 'Distribution',
+    note: 'High reversal / trap risk',
+    cls: 'prob-low'
+  };
+    }
+
+    function analyzeMajorityContext(aiList){
+  let bullish = 0;
+  let cooling = 0;
+  let bearish = 0;
+
+  aiList.forEach(r => {
+    const p = r.probability;
+    const b = r.volAI.bias;
+
+    if (b === 'Bullish' && p >= 65) bullish++;
+    else if (b === 'Bearish' && p < 35) bearish++;
+    else cooling++; // Neutral / Caution / Exhaustion zone
+  });
+
+  const total = aiList.length;
+  const pct = v => ((v / total) * 100).toFixed(0);
+
+  let label = 'Mixed / Transitional';
+  let description = 'Market undecided, wait for confirmation';
+
+  if (cooling / total >= 0.5) {
+    label = 'Market Cooling / Exhaustion';
+    description = 'Trend losing momentum, pullbacks or ranges likely';
+  } 
+  else if (bearish / total >= 0.4) {
+    label = 'Distribution Risk';
+    description = 'High-volume selling pressure dominating';
+  } 
+  else if (bullish / total >= 0.5) {
+    label = 'Trend Continuation';
+    description = 'High-volume accumulation supporting trend';
+  }
+
+  return {
+    bullish, cooling, bearish, total,
+    label,
+    description,
+    stats: {
+      bullishPct: pct(bullish),
+      coolingPct: pct(cooling),
+      bearishPct: pct(bearish)
+    }
+  };
+    }
+
+function renderMarketContext(summary){
+  const el = document.getElementById('marketContext');
+
+  el.innerHTML = `
+    <strong>${summary.label}</strong>
+    <div class="muted">${summary.description}</div>
+    <div style="margin-top:6px">
+      🟢 Bullish: ${summary.stats.bullishPct}% |
+      🟡 Cooling: ${summary.stats.coolingPct}% |
+      🔴 Distribution: ${summary.stats.bearishPct}%
+    </div>
+  `;
+}
+    
+    function renderAITop30(list){
+  const el = document.getElementById('aiTop30Results');
+
+  if(!list.length){
+    el.innerHTML = 'No AI data';
+    return;
+  }
+
+  const probClass = p =>
+    p >= 80 ? 'prob-high' :
+    p >= 65 ? 'prob-good' :
+    p >= 50 ? 'prob-mid'  :
+              'prob-low';
+
+  const locClass = l =>
+    l === 'LOW'  ? 'loc-low' :
+    l === 'MID'  ? 'loc-mid' :
+                   'loc-high';
+
+  const meaningClass = m => {
+    const t = m.toLowerCase();
+    if(t.includes('bullish')) return 'mean-bull';
+    if(t.includes('bearish')) return 'mean-bear';
+    if(t.includes('caution')) return 'mean-caution';
+    return '';
+  };
+
+  let html = `<div class="table-wrap">
+  <table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Symbol</th>
+      <th>24h%</th>
+      <th>Vol</th>
+      <th>Location</th>
+      <th>Meaning</th>
+      <th>Probability</th>
+    </tr>
+  </thead>
+  <tbody>`;
+
+  list.forEach((r,i)=>{
+  const interp = interpretProbability(r.probability); // ✅ FIX
+
+  html += `<tr>
+    <td>${i+1}</td>
+    <td><strong>${r.symbol}</strong></td>
+    <td>${r.pct.toFixed(2)}%</td>
+
+    <td class="${r.volAI.color === 'GREEN' ? 'vol-green' : 'vol-red'}">
+      ${r.volAI.color}
+    </td>
+
+    <td class="${locClass(r.volAI.location)}">
+      ${r.volAI.location}
+    </td>
+
+    <td class="${meaningClass(r.volAI.meaning)}">
+      ${r.volAI.meaning}
+    </td>
+
+    <td class="${probClass(r.probability)}" title="${interp.note}">
+      <strong>${r.probability}%</strong>
+      <small>${interp.label}</small>
+    </td>
+  </tr>`;
+});
+
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+}
+
+    // Controls
+    document.getElementById('startBtn').addEventListener('click', ()=>{
+      if(controller.running) return; controller.running = true; document.getElementById('startBtn').disabled = true; document.getElementById('stopBtn').disabled = false; startLoop();
+    });
+    document.getElementById('stopBtn').addEventListener('click', ()=>{ controller.running = false; document.getElementById('startBtn').disabled = false; document.getElementById('stopBtn').disabled = true; setStatus('Stopped'); });
+
+    async function startLoop(){
+      if(window.Notification && Notification.permission !== 'granted' && Notification.permission !== 'denied'){
+        try{ await Notification.requestPermission(); }catch(e){ console.warn('notification request failed', e); }
+      }
+      setStatus('Scanner running');
+      while(controller.running){
+        try{ await runScan(); }catch(e){ console.error('scan error', e); setStatus('Scan error — see console'); }
+        if(!controller.running) break;
+        const poll = Math.max(10, Number(document.getElementById('pollSec').value || 60));
+        await sleep(poll * 1000);
+      }
+    }
+
+    document.getElementById('testBtn').addEventListener('click', async ()=>{
+      const s = (document.getElementById('testSymbol').value || 'BTCUSDT').trim().toUpperCase();
+      const out = document.getElementById('testOut'); const st = document.getElementById('testStatus');
+      st.textContent = 'Fetching klines...'; out.textContent = '';
+      try{
+        const k = await fetchKlines(s);
+        st.textContent = 'Checking last-close > EMA200 & top-24h-topvol-is-red...';
+        const emaOk = isLastCloseAboveEMA200(k);
+        const vr = Number(document.getElementById('volRatio').value) || 1.0;
+        const match = detect24hTopVolMustBeRed_thenBreak_baseVol(k, vr);
+        out.textContent = `Klines fetched: ${k.length}\nLast close > EMA200: ${emaOk}\n\nResult:\n${match ? JSON.stringify(match, null, 2) : 'No pattern / insufficient data'}`;
+        st.textContent = 'Done';
+        console.log('Test klines sample:', k.slice(-24));
+      }catch(e){ st.textContent = 'Error'; out.textContent = 'Error: ' + (e.message || String(e)); console.error(e); }
+    });
+
+    document.getElementById('updateBlacklistBtn').addEventListener('click', ()=>{
+      const text = document.getElementById('blacklistArea').value || '';
+      const lines = text.split(/\r?\n/).map(s => s.trim().toUpperCase()).filter(Boolean);
+      blacklist = Array.from(new Set(lines));
+      document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
+      alert('Blacklist updated — ' + blacklist.length + ' symbols');
+    });
+
+    window.openSymbol = openSymbol;
+    window.copySym = copySym;
+    window.addEventListener('error', e=>console.error('Runtime error', e));
+  </script>
+</body>
+</html>

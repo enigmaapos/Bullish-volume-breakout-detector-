@@ -400,6 +400,59 @@
     reason: 'no_later_green_absorber'
   };
     }
+
+    function detectRedFailureAbsorption(klines, ratio = 0.6){
+  if(!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    vol: safeNum(c.baseVol),
+    time: c.openTime
+  }));
+
+  // find highest red volume candle
+  let topRed = null;
+  let topIdx = -1;
+
+  for(let i=0;i<last24h.length;i++){
+    const c = last24h[i];
+    if(c.close < c.open){
+      if(!topRed || c.vol > topRed.vol){
+        topRed = c;
+        topIdx = i;
+      }
+    }
+  }
+
+  if(!topRed) return null;
+
+  // check later red attempts
+  for(let j = topIdx + 1; j < last24h.length; j++){
+    const r = last24h[j];
+    if(r.close >= r.open) continue;
+
+    // strong but FAILED sell attempt
+    if(
+      r.vol >= topRed.vol * ratio &&
+      r.vol < topRed.vol &&
+      r.low >= topRed.low
+    ){
+      return {
+        found: true,
+        type: 'sell_absorption',
+        label: 'Bullish consolidation / cooling',
+        intent: 'Sellers absorbed',
+        topRed,
+        failedRed: r
+      };
+    }
+  }
+
+  return null;
+}
       
       
     function detect24hVolumeLocationAI(klines){
@@ -665,6 +718,19 @@ for (const p of emaOkSymbols) {
         match
       });
     }
+
+    const absorption = detectRedFailureAbsorption(kl);
+
+if(absorption){
+  absorbedSymbols.push(p.symbol);
+  counts.absorbed++;
+
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match: absorption
+  });
+}
 
   } catch (e) {
     console.warn('Phase B failed:', p.symbol, e.message);

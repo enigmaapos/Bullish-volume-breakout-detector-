@@ -812,7 +812,7 @@ if (postAbsorb && postAbsorb.found === true) {
   results.push({
     symbol: p.symbol,
     pct: p.pct,
-    match, // ✅ KEEP ORIGINAL ABSORPTION STRUCTURE
+    match: postCont,
     absorptionType: 'post-continuation'
   });
 

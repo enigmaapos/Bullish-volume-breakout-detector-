@@ -383,60 +383,78 @@
       }));
     }
 
-    // detector detect Red High Green Low Absorption (kept same as in your last version)
-  function detect24hTopVol_thenAbsorption(
-  klines,
-  minRedVolRank = 0.9 // red must be top 10% volume in 24h
-){
-  if (!klines || klines.length < 96) return null;
+    
+  // detector (kept same as in your last version)  
+function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
 
-  const last24h = klines.slice(-96).map(c => ({
-    open: safeNum(c.open),
-    high: safeNum(c.high),
-    low: safeNum(c.low),
-    close: safeNum(c.close),
-    vol: safeNum(c.baseVol),
-    time: c.openTime
-  }));
+if (!klines || klines.length < 96) return null;
 
-  // 1️⃣ Collect red candles
-  const reds = last24h
-    .filter(c => c.close < c.open)
-    .sort((a,b) => b.vol - a.vol);
+const last24h = klines.slice(-96).map(c => ({
+openTime: c.openTime,
+open: safeNum(c.open),
+high: safeNum(c.high),
+low: safeNum(c.low),
+close: safeNum(c.close),
+baseVol: safeNum(c.baseVol)
+}));
 
-  if (!reds.length) return null;
+// 1️⃣ Find highest-volume candle in 24h
+let top = last24h[0];
+let topIdx = 0;
 
-  // pick red from top volume percentile
-  const pickIdx = Math.floor(reds.length * (1 - minRedVolRank));
-  const red = reds[pickIdx] || reds[0];
-
-  // 2️⃣ Look for GREEN that totally breaks red volume
-  for (const g of last24h) {
-    if (g.time <= red.time) continue;
-    if (g.close <= g.open) continue;        // must be green
-
-    // 🔒 price still lower (absorption zone)
-    if (g.high > red.high) continue;
-
-    // 🔥 TOTAL VOLUME BREAKOUT
-    if (g.vol <= red.vol) continue;
-
-    return {
-      found: true,
-      type: 'red_high_green_low_total_breakout',
-      label: 'Sell-side climax → volume breakout',
-      intent: 'Strong accumulation / reversal',
-      redCandle: red,
-      greenCandle: g,
-      redVol: red.vol,
-      greenVol: g.vol,
-      dominance: ((g.vol / red.vol) * 100).toFixed(0) + '%',
-      priceRelation: 'green_below_red_high'
-    };
-  }
-
-  return null;
+for (let i = 1; i < last24h.length; i++) {
+if (last24h[i].baseVol > top.baseVol) {
+top = last24h[i];
+topIdx = i;
 }
+}
+
+// Must be RED
+if (top.close >= top.open) {
+return {
+found: false,
+reason: 'top_volume_not_red',
+topCandle: top
+};
+}
+
+// 2️⃣ Look for GREEN absorber AFTER it
+for (let j = topIdx + 1; j < last24h.length; j++) {
+const g = last24h[j];
+
+if (g.close <= g.open) continue;                 // must be green  
+if (g.baseVol < top.baseVol * volRatio) continue; // must absorb volume  
+
+// ✅ THIS IS YOUR ONLY VALID CONDITION  
+if (g.high < top.high) {  
+  return {  
+    found: true,  
+    type: 'absorption_lower_price',  
+    intent: 'Cooling / Re-accumulation',  
+    strength: 'Moderate',  
+    redIndex24h: topIdx,  
+    redCandle: top,  
+    greenIndex24h: j,  
+    greenCandle: g,  
+    redBaseVol: top.baseVol,  
+    greenBaseVol: g.baseVol  
+  };  
+}  
+
+// If volume breaks but price goes higher → ignore  
+return {  
+  found: false,  
+  reason: 'volume_break_but_price_higher'  
+};
+
+}
+
+return {
+found: false,
+reason: 'no_later_green_absorber'
+};
+}
+
 
     
 

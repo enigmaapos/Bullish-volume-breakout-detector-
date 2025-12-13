@@ -495,7 +495,7 @@
 }
 
 
-    function detectPostAbsorptionContinuation(klines, absorptionMatch) {
+    function detectPostAbsorptionContinuation(klines, absorptionMatch, ratio = 0.7) {
   if (!klines || !absorptionMatch) return null;
   if (absorptionMatch.found !== true) return null;
   if (absorptionMatch.type !== 'absorption_lower_price') return null;
@@ -510,22 +510,35 @@
 
   const gIdx = absorptionMatch.greenIndex24h;
   const gLow = absorptionMatch.greenCandle.low;
+  const absorbedRedVol = absorptionMatch.redBaseVol;
 
+  // 🔍 look for FAILED red follow-up after green absorption
   for (let i = gIdx + 1; i < last24h.length; i++) {
     const c = last24h[i];
 
-    // ❌ structure failed
+    // must be red attempt
+    if (c.close >= c.open) continue;
+
+    // ❌ sellers tried harder → structure failed
+    if (c.vol >= absorbedRedVol) return null;
+
+    // ❌ sellers broke structure
     if (c.low < gLow) return null;
+
+    // ✅ seller attempt FAILED → continuation confirmed
+    if (c.vol >= absorbedRedVol * ratio) {
+      return {
+        ...absorptionMatch,
+        found: true,
+        type: 'post_absorption_continuation',
+        label: 'Post-absorption continuation',
+        intent: 'Sellers failed after absorption',
+        failedRed: c
+      };
+    }
   }
 
-  // ✅ CONTINUATION CONFIRMED
-  return {
-    ...absorptionMatch,               // 🔥 KEEP FULL STRUCTURE
-    found: true,
-    type: 'post_absorption_continuation',
-    label: 'Post-absorption continuation',
-    intent: 'Trend continuation'
-  };
+  return null;
 }
       
     function detect24hVolumeLocationAI(klines){

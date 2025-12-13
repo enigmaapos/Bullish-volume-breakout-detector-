@@ -495,63 +495,71 @@
 }
 
 
-    function detectPostAbsorptionContinuation(
-  klines,
-  absorptionMatch,
-  greenRatio = 0.75,   // 75–80% absorption
-  redFailRatio = 0.5   // follow-up red must be ≤ 50%
-){
-  if (!klines || !absorptionMatch) return null;
-  if (absorptionMatch.found !== true) return null;
-  if (absorptionMatch.type !== 'absorption_lower_price') return null;
+    function detectPostAbsorptionContinuation(klines, greenRatio = 0.75, redFailRatio = 0.5){
+  if(!klines || klines.length < 96) return null;
 
   const last24h = klines.slice(-96).map(c => ({
     open: safeNum(c.open),
     high: safeNum(c.high),
     low: safeNum(c.low),
     close: safeNum(c.close),
-    vol: safeNum(c.baseVol)
+    vol: safeNum(c.baseVol),
+    time: c.openTime
   }));
 
-  const redVol = absorptionMatch.redBaseVol;
-  const redHigh = absorptionMatch.redCandle.high;
+  // 1️⃣ Highest RED volume (24h)
+  let topRed = null;
+  let redIdx = -1;
 
-  const gIdx = absorptionMatch.greenIndex24h;
-  const g = absorptionMatch.greenCandle;
-
-  // 🔒 GATE 1 — enforce STRONG green absorption
-  if (
-    g.vol < redVol * greenRatio ||
-    g.high > redHigh
-  ) {
-    return null; // ❌ not real absorption
-  }
-
-  // 🔍 GATE 2 — look for FAILED red follow-through
-  for (let i = gIdx + 1; i < last24h.length; i++) {
+  for(let i=0;i<last24h.length;i++){
     const c = last24h[i];
-
-    // ignore green candles
-    if (c.close >= c.open) continue;
-
-    // ❌ sellers came back too strong
-    if (c.vol > redVol * redFailRatio) return null;
-
-    // ❌ structure broken
-    if (c.low < g.low) return null;
-
-    // ✅ seller attempt FAILED → continuation
-    return {
-      ...absorptionMatch,
-      found: true,
-      type: 'post_absorption_continuation',
-      label: 'Post-absorption continuation',
-      intent: 'Sellers failed after absorption',
-      failedRed: c
-    };
+    if(c.close < c.open){
+      if(!topRed || c.vol > topRed.vol){
+        topRed = c;
+        redIdx = i;
+      }
+    }
   }
 
-  return null;
+  if(!topRed) return null;
+
+  // 2️⃣ Green absorption (75–80%)
+  let green = null;
+  let greenIdx = -1;
+
+  for(let i = redIdx + 1; i < last24h.length; i++){
+    const c = last24h[i];
+    if(c.close > c.open && c.vol >= topRed.vol * greenRatio){
+      green = c;
+      greenIdx = i;
+      break;
+    }
+  }
+
+  if(!green) return null;
+
+  // 3️⃣ Failed red follow-through
+  for(let i = greenIdx + 1; i < last24h.length; i++){
+    const r = last24h[i];
+
+    if(r.close >= r.open) continue;
+
+    // ❌ sellers regained strength
+    if(r.vol >= topRed.vol * redFailRatio) return null;
+
+    // ❌ structure lost
+    if(r.low < green.low) return null;
+  }
+
+  // ✅ POST-ABSORPTION CONTINUATION
+  return {
+    found: true,
+    type: 'post_absorption_continuation',
+    label: 'Post-absorption continuation',
+    intent: 'Trend continuation',
+    topRed,
+    greenAbsorb: green
+  };
 }
 
     
@@ -800,7 +808,7 @@ for (const p of emaOkSymbols) {
     if (!match) continue;
 
     const redFail = detectRedFailureAbsorption(kl);
-    const postAbsorb = detectPostAbsorptionContinuation(kl, match);
+    const postAbsorb = detectPostAbsorptionContinuation(kl);
 
     // 1️⃣ Top volume NOT red
     if (match.reason === 'top_volume_not_red') {

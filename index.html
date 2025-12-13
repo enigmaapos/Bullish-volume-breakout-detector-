@@ -261,6 +261,17 @@
     </div>
   </div>
 
+      <!-- Sell climax absorption -->
+<div style="margin-top:10px">
+  <div>
+    <strong>🔴➡🟢 Sell climax absorption</strong>
+    (<span id="cntSellClimax">0</span>):
+  </div>
+  <div id="sellClimaxList" class="list-inline">
+    <span class="muted">—</span>
+  </div>
+</div>
+
   <!-- Red failure absorption -->
   <div style="margin-top:10px">
     <div>
@@ -562,6 +573,73 @@
   };
 }
 
+      function detectAscendingRedVolumeAbsorption(
+  klines,
+  minRedCount = 3,
+  greenVolRatio = 1.0
+){
+  if (!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    vol: safeNum(c.baseVol),
+    time: c.openTime
+  }));
+
+  const redSeq = [];
+
+  // 1️⃣ Find ascending red-volume + descending-price sequence
+  for (let i = 1; i < last24h.length; i++) {
+    const prev = last24h[i - 1];
+    const curr = last24h[i];
+
+    if (
+      curr.close < curr.open &&            // red candle
+      prev.close < prev.open &&            // previous also red
+      curr.vol > prev.vol &&               // ascending volume
+      curr.low < prev.low                  // descending price
+    ) {
+      if (redSeq.length === 0) redSeq.push(prev);
+      redSeq.push(curr);
+    } else {
+      // break sequence if condition fails
+      if (redSeq.length >= minRedCount) break;
+      redSeq.length = 0;
+    }
+  }
+
+  if (redSeq.length < minRedCount) return null;
+
+  const topRed = redSeq.reduce((a,b)=> b.vol > a.vol ? b : a);
+
+  // 2️⃣ Look for green absorber AFTER red sequence
+  const startIdx = last24h.indexOf(redSeq[redSeq.length - 1]);
+
+  for (let i = startIdx + 1; i < last24h.length; i++) {
+    const g = last24h[i];
+
+    if (g.close <= g.open) continue; // must be green
+
+    // ✅ Green volume absorbs entire red sequence
+    if (g.vol >= topRed.vol * greenVolRatio) {
+      return {
+        found: true,
+        type: 'ascending_red_volume_absorption',
+        label: 'Sell climax → Green absorption',
+        intent: 'Bullish reversal / re-accumulation',
+        redSequence: redSeq,
+        topRed,
+        greenAbsorber: g
+      };
+    }
+  }
+
+  return null;
+       }
+
     
       
     function detect24hVolumeLocationAI(klines){
@@ -791,7 +869,8 @@ const counts = {
   topRed: 0,
   greenAbsorb: 0,
   postCont: 0,
-  redFail: 0
+  redFail: 0,
+  sellClimax: 0
 };
 
 const topNotRedSymbols = [];
@@ -799,6 +878,7 @@ const topRedSymbols = [];
 const greenAbsorbSymbols = [];
 const postContSymbols = [];
 const redFailSymbols = [];
+const sellClimaxSymbols = [];
 
 for (const p of emaOkSymbols) {
   try {
@@ -809,6 +889,8 @@ for (const p of emaOkSymbols) {
 
     const redFail = detectRedFailureAbsorption(kl);
     const postAbsorb = detectPostAbsorptionContinuation(kl);
+    const sellClimax = detectAscendingRedVolumeAbsorption(kl);
+
 
     // 1️⃣ Top volume NOT red
     if (match.reason === 'top_volume_not_red') {
@@ -844,6 +926,18 @@ if (postAbsorb && postAbsorb.found === true) {
     pct: p.pct,
     match: postAbsorb,
     absorptionType: 'post-continuation'
+  });
+}
+
+    if (sellClimax && sellClimax.found) {
+  counts.sellClimax++;
+  sellClimaxSymbols.push(p.symbol);
+
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match: sellClimax,
+    absorptionType: 'sell-climax'
   });
 }
 
@@ -894,6 +988,12 @@ document.getElementById('postContList').innerHTML =
 document.getElementById('cntRedFail').textContent = counts.redFail;
 document.getElementById('redFailList').innerHTML =
   redFailSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+  document.getElementById('cntSellClimax').textContent = counts.sellClimax;
+document.getElementById('sellClimaxList').innerHTML =
+  sellClimaxSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 

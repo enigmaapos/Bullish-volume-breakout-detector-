@@ -211,36 +211,27 @@
     </div>
 
     <div class="card">
-      <h2>Ignored / Groups</h2>
-      <div class="muted" style="margin-top:6px">Use these lists to inspect which symbols were ignored and why. Tap a pill to open the symbol on Binance.</div>
+  <h2>Volume Structure Groups (24h)</h2>
+  <div class="muted" style="margin-top:6px">
+    Classification based on the highest-volume candle in the last 24h and its reaction.
+  </div>
 
-      <div style="margin-top:10px">
-        <div><strong>Top-volume is NOT red</strong> (<span id="cntTopNotRed">0</span>):</div>
-        <div id="topNotRedList" class="list-inline"><span style="color:#6b7280">—</span></div>
-      </div>
+  <div style="margin-top:10px">
+    <div><strong>Top volume is NOT red</strong> (<span id="cntTopNotRed">0</span>):</div>
+    <div id="topNotRedList" class="list-inline"><span class="muted">—</span></div>
+  </div>
 
-      <div style="margin-top:8px">
-        <div><strong>Broken earlier at lower price</strong> (<span id="cntBrokenLower">0</span>):</div>
-        <div id="brokenLowerList" class="list-inline"><span style="color:#6b7280">—</span></div>
-      </div>
+  <div style="margin-top:10px">
+    <div><strong>Top volume IS red</strong> (<span id="cntTopRed">0</span>):</div>
+    <div id="topRedList" class="list-inline"><span class="muted">—</span></div>
+  </div>
 
-      <div style="margin-top:8px">
-        <div><strong>Green made day-high</strong> (<span id="cntGreenDayHigh">0</span>):</div>
-        <div id="greenDayHighList" class="list-inline"><span style="color:#6b7280">—</span></div>
-      </div>
-
-      <div style="margin-top:8px">
-        <div><strong>No later green breaker</strong> (<span id="cntNoBreaker">0</span>):</div>
-        <div id="noBreakerList" class="list-inline"><span style="color:#6b7280">—</span></div>
-      </div>
+  <div style="margin-top:10px">
+    <div><strong>Red volume absorbed (green breaks at LOWER price)</strong>
+      (<span id="cntAbsorbed">0</span>):
     </div>
-
-    <div class="card">
-      <h2>Top-24h RED high-volume symbols</h2>
-      <div class="muted" style="margin-top:6px">Symbols that had the absolute highest baseVol within the 24h window and that candle was RED (Option A list).</div>
-      <div style="margin-top:10px">
-        <div id="topVolRedList" class="list-inline"><span style="color:#6b7280">—</span></div>
-      </div>
+    <div id="absorbedList" class="list-inline"><span class="muted">—</span></div>
+  </div>
     </div>
 
     <div class="card">
@@ -631,7 +622,15 @@ renderMarketContext(marketSummary);
 
       setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
       const results = [];
-      let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0, noBreaker:0 };
+      let counts = {
+  topNotRed: 0,
+  topRed: 0,
+  absorbed: 0
+};
+
+const topNotRedSymbols = [];
+const topRedSymbols = [];
+const absorbedSymbols = [];
       const brokenLowerSymbols = [];
       const topVolRedSymbols = [];
       const topNotRedSymbols = [];
@@ -644,56 +643,58 @@ renderMarketContext(marketSummary);
     const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
     const volAI = detect24hVolumeLocationAI(kl);
 
-    if (match && match.found) {
+    for (const p of emaOkSymbols) {
+  try {
+    const kl = klinesMap[p.symbol];
+    const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+
+    if (!match) continue;
+
+    // 1️⃣ Top volume NOT red
+    if (match.reason === 'top_volume_not_red') {
+      counts.topNotRed++;
+      topNotRedSymbols.push(p.symbol);
+      continue;
+    }
+
+    // 2️⃣ Top volume IS red (baseline)
+    counts.topRed++;
+    topRedSymbols.push(p.symbol);
+
+    // 3️⃣ Valid absorption (ONLY THIS is bullish)
+    if (match.found === true && match.type === 'absorption_lower_price') {
+      counts.absorbed++;
+      absorbedSymbols.push(p.symbol);
+
       results.push({
         symbol: p.symbol,
         pct: p.pct,
-        match,
-        volAI
+        match
       });
-      topVolRedSymbols.push(p.symbol);
-    }
-    else if (match && match.reason === 'top_volume_not_red') {
-      counts.topNotRed++;
-      topNotRedSymbols.push(p.symbol);
-    }
-    else if (match && match.reason === 'broken_earlier_at_lower_price') {
-      counts.brokenLower++;
-      brokenLowerSymbols.push(p.symbol);
-      topVolRedSymbols.push(p.symbol);
-    }
-    else if (match && match.reason === 'green_made_day_high') {
-      counts.greenDayHigh++;
-      greenDayHighSymbols.push(p.symbol);
-      topVolRedSymbols.push(p.symbol);
-    }
-    else if (match && match.reason === 'no_later_green_breaker') {
-      counts.noBreaker++;
-      noBreakerSymbols.push(p.symbol);
-      topVolRedSymbols.push(p.symbol);
     }
 
   } catch (e) {
     console.warn('phase B failed for', p.symbol, e.message);
   }
 }
-
+    
       // update ignored lists UI
       document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
-      document.getElementById('topNotRedList').innerHTML = topNotRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+document.getElementById('topNotRedList').innerHTML =
+  topNotRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('')
+  || '<span class="muted">—</span>';
 
-      document.getElementById('cntBrokenLower').textContent = counts.brokenLower;
-      document.getElementById('brokenLowerList').innerHTML = brokenLowerSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
+document.getElementById('cntTopRed').textContent = counts.topRed;
+document.getElementById('topRedList').innerHTML =
+  topRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('')
+  || '<span class="muted">—</span>';
 
-      document.getElementById('cntGreenDayHigh').textContent = counts.greenDayHigh;
-      document.getElementById('greenDayHighList').innerHTML = greenDayHighSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
-
-      document.getElementById('cntNoBreaker').textContent = counts.noBreaker;
-      document.getElementById('noBreakerList').innerHTML = noBreakerSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') || '<span style="color:#6b7280">—</span>';
-
-      document.getElementById('topVolRedList').innerHTML = topVolRedSymbols.length ? topVolRedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('') : '<span style="color:#6b7280">—</span>';
-
-      const el = document.getElementById('matches');
+document.getElementById('cntAbsorbed').textContent = counts.absorbed;
+document.getElementById('absorbedList').innerHTML =
+  absorbedSymbols.map(s => `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`).join('')
+  || '<span class="muted">—</span>';
+    
+    const el = document.getElementById('matches');
       if(results.length === 0){
         el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
         document.getElementById('matchSummary').textContent = `0 matches`;

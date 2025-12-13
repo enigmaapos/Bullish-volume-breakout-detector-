@@ -193,6 +193,11 @@
     </div>
 
     <div class="card">
+  <h2>Market Volume Context (Top 30)</h2>
+  <div id="marketContext">—</div>
+    </div>
+
+    <div class="card">
   <div class="section-title">
     <h2>Top 30 — Highest 24h Volume (AI Context)</h2>
     <small>Highest volume candle per symbol (red or green)</small>
@@ -610,6 +615,9 @@ const aiSorted = [...aiTop30]
 
 renderAITop30(aiSorted);
 
+      const marketSummary = analyzeMajorityContext(aiSorted);
+renderMarketContext(marketSummary);
+
       setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
       const results = [];
       let counts = { topNotRed:0, brokenLower:0, greenDayHigh:0, noBreaker:0 };
@@ -795,6 +803,65 @@ renderAITop30(aiSorted);
   };
     }
 
+    function analyzeMajorityContext(aiList){
+  let bullish = 0;
+  let cooling = 0;
+  let bearish = 0;
+
+  aiList.forEach(r => {
+    const p = r.probability;
+    const b = r.volAI.bias;
+
+    if (b === 'Bullish' && p >= 65) bullish++;
+    else if (b === 'Bearish' && p < 35) bearish++;
+    else cooling++; // Neutral / Caution / Exhaustion zone
+  });
+
+  const total = aiList.length;
+  const pct = v => ((v / total) * 100).toFixed(0);
+
+  let label = 'Mixed / Transitional';
+  let description = 'Market undecided, wait for confirmation';
+
+  if (cooling / total >= 0.5) {
+    label = 'Market Cooling / Exhaustion';
+    description = 'Trend losing momentum, pullbacks or ranges likely';
+  } 
+  else if (bearish / total >= 0.4) {
+    label = 'Distribution Risk';
+    description = 'High-volume selling pressure dominating';
+  } 
+  else if (bullish / total >= 0.5) {
+    label = 'Trend Continuation';
+    description = 'High-volume accumulation supporting trend';
+  }
+
+  return {
+    bullish, cooling, bearish, total,
+    label,
+    description,
+    stats: {
+      bullishPct: pct(bullish),
+      coolingPct: pct(cooling),
+      bearishPct: pct(bearish)
+    }
+  };
+    }
+
+function renderMarketContext(summary){
+  const el = document.getElementById('marketContext');
+
+  el.innerHTML = `
+    <strong>${summary.label}</strong>
+    <div class="muted">${summary.description}</div>
+    <div style="margin-top:6px">
+      🟢 Bullish: ${summary.stats.bullishPct}% |
+      🟡 Cooling: ${summary.stats.coolingPct}% |
+      🔴 Distribution: ${summary.stats.bearishPct}%
+    </div>
+  `;
+}
+    
     function renderAITop30(list){
   const el = document.getElementById('aiTop30Results');
 

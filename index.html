@@ -495,7 +495,12 @@
 }
 
 
-    function detectPostAbsorptionContinuation(klines, absorptionMatch, ratio = 0.5) {
+    function detectPostAbsorptionContinuation(
+  klines,
+  absorptionMatch,
+  greenRatio = 0.75,   // 75–80% absorption
+  redFailRatio = 0.5   // follow-up red must be ≤ 50%
+){
   if (!klines || !absorptionMatch) return null;
   if (absorptionMatch.found !== true) return null;
   if (absorptionMatch.type !== 'absorption_lower_price') return null;
@@ -508,50 +513,48 @@
     vol: safeNum(c.baseVol)
   }));
 
+  const redVol = absorptionMatch.redBaseVol;
+  const redHigh = absorptionMatch.redCandle.high;
+
   const gIdx = absorptionMatch.greenIndex24h;
-  const gLow = absorptionMatch.greenCandle.low;
-  const absorbedRedVol = absorptionMatch.redBaseVol;
+  const g = absorptionMatch.greenCandle;
 
-  let maxFollowRedVol = 0;
-  let failedRed = null;
+  // 🔒 GATE 1 — enforce STRONG green absorption
+  if (
+    g.vol < redVol * greenRatio ||
+    g.high > redHigh
+  ) {
+    return null; // ❌ not real absorption
+  }
 
-  // 🔍 scan SELL attempts AFTER absorption
+  // 🔍 GATE 2 — look for FAILED red follow-through
   for (let i = gIdx + 1; i < last24h.length; i++) {
     const c = last24h[i];
 
     // ignore green candles
     if (c.close >= c.open) continue;
 
-    // ❌ structure break → invalid
-    if (c.low < gLow) return null;
-
-    // track strongest red follow-through
-    if (c.vol > maxFollowRedVol) {
-      maxFollowRedVol = c.vol;
-      failedRed = c;
-    }
-
     // ❌ sellers came back too strong
-    if (c.vol >= absorbedRedVol) return null;
+    if (c.vol > redVol * redFailRatio) return null;
+
+    // ❌ structure broken
+    if (c.low < g.low) return null;
+
+    // ✅ seller attempt FAILED → continuation
+    return {
+      ...absorptionMatch,
+      found: true,
+      type: 'post_absorption_continuation',
+      label: 'Post-absorption continuation',
+      intent: 'Sellers failed after absorption',
+      failedRed: c
+    };
   }
 
-  // ❌ no meaningful sell attempt
-  if (!failedRed) return null;
-
-  // ❌ follow-through too strong (not exhausted)
-  if (maxFollowRedVol > absorbedRedVol * ratio) return null;
-
-  // ✅ SELLERS FAILED AFTER ABSORPTION
-  return {
-    ...absorptionMatch,
-    found: true,
-    type: 'post_absorption_continuation',
-    label: 'Post-absorption continuation',
-    intent: 'Sellers failed after absorption',
-    failedRed,
-    maxFollowRedVol
-  };
+  return null;
 }
+
+    
       
     function detect24hVolumeLocationAI(klines){
   if (!klines || klines.length < 96) return null;

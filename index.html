@@ -819,17 +819,6 @@ document.getElementById('redFailList').innerHTML =
 `;
       for(const r of results){
         const m = r.match;
-
-  // 🔔 ONLY GREEN ABSORPTION NOTIFICATION
-  if (r.absorptionType === 'green') {
-    notifyUser(
-      '🟢 Green Absorption: ' + r.symbol,
-      `Sell pressure absorbed — re-accumulation
-RedVol: ${fmt(m.redBaseVol)} → GreenVol: ${fmt(m.greenBaseVol)}`,
-      r.symbol
-    );
-  }
-        
         html += `<tr class="match-row">
   <td>${r.symbol}</td>
   <td>${Number(r.pct).toFixed(2)}%</td>
@@ -851,8 +840,9 @@ RedVol: ${fmt(m.redBaseVol)} → GreenVol: ${fmt(m.greenBaseVol)}`,
   <td>
     <button onclick="openSymbol('${r.symbol}')">Open</button>
   </td>
-</tr>`;}
-      
+</tr>`;
+        notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)} — redCount24h: ${m.redCount24h}`, r.symbol);
+      }
       html += '</tbody></table></div>';
       el.innerHTML = html;
       window._lastMatches = results;

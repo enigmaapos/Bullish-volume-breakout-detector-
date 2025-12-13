@@ -623,8 +623,27 @@ document.getElementById('dominance24h').textContent = domText;
         return;
       }
 
-      let html = '<div class="table-wrap"><table><thead><tr><th>Symbol</th><th>24h%</th><th>RedCount(24h)</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>Vol AI</th>
-<th>Meaning</th><th>Actions</th></tr></thead><tbody>';
+      let html = `
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+  <th>Symbol</th>
+  <th>24h%</th>
+  <th>RedCount(24h)</th>
+  <th>Red time</th>
+  <th>Red Vol</th>
+  <th>Red high</th>
+  <th>Green time</th>
+  <th>Green Vol</th>
+  <th>Green high</th>
+  <th>Vol AI</th>
+  <th>Meaning</th>
+  <th>Actions</th>
+</tr>
+</thead>
+<tbody>
+`;
       for(const r of results){
         const m = r.match;
         html += `<tr class="match-row">
@@ -639,11 +658,11 @@ document.getElementById('dominance24h').textContent = domText;
   <td>${fmtPrice(m.greenCandle.high)}</td>
 
   <td>
-    ${volAI.color} @ ${volAI.location}
-  </td>
-  <td>
-    ${volAI.meaning}
-  </td>
+  ${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}
+</td>
+<td>
+  ${r.volAI ? r.volAI.meaning : '-'}
+</td>
 
   <td>
     <button onclick="openSymbol('${r.symbol}')">Open</button>

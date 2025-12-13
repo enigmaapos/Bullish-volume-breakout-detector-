@@ -582,6 +582,16 @@ for(const p of topAfterBlacklist){
   }
 }
 
+      aiTop30.forEach(x => {
+  x.probability = scoreVolumeAI(x.volAI);
+});
+
+// sort by probability DESC
+aiTop30.sort((a, b) => b.probability - a.probability);
+
+// keep top 30 (or top 10)
+const aiTop10 = aiTop30.slice(0, 10);
+
 // sort by highest 24h volume
 aiTop30.sort((a,b)=> b.volAI.volume - a.volAI.volume);
 
@@ -722,47 +732,66 @@ renderAITop30(aiTop30.slice(0, 30));
       }catch(e){ return null; }
     }
 
-    function renderAITop30(results){
-  if(!results.length){
-    document.getElementById('aiTop30Results').innerHTML = 'No data';
+    function scoreVolumeAI(volAI){
+  if(!volAI) return 0;
+
+  let score = 50; // neutral baseline
+
+  // Core bias
+  if(volAI.bias === 'Bullish') score += 25;
+  if(volAI.bias === 'Bearish') score -= 25;
+  if(volAI.bias === 'Caution') score -= 10;
+
+  // Location weighting
+  if(volAI.location === 'LOW') score += 10;
+  if(volAI.location === 'HIGH') score -= 10;
+
+  // Color confirmation
+  if(volAI.color === 'GREEN') score += 5;
+  if(volAI.color === 'RED') score -= 5;
+
+  // Clamp 0–100
+  return Math.max(0, Math.min(100, score));
+    }
+
+    function renderAITop30(list){
+  const el = document.getElementById('aiTop30Results');
+
+  if(!list.length){
+    el.innerHTML = 'No AI data';
     return;
   }
 
-  let html = `
-  <div class="table-wrap">
+  let html = `<div class="table-wrap">
   <table>
-    <thead>
-      <tr>
-        <th>Symbol</th>
-        <th>24h %</th>
-        <th>Top Vol Color</th>
-        <th>Location</th>
-        <th>Volume</th>
-        <th>Meaning</th>
-        <th>Bias</th>
-      </tr>
-    </thead>
-    <tbody>
-  `;
-
-  for(const r of results){
-    html += `
+  <thead>
     <tr>
+      <th>#</th>
+      <th>Symbol</th>
+      <th>24h%</th>
+      <th>Vol Color</th>
+      <th>Location</th>
+      <th>Meaning</th>
+      <th>Probability</th>
+    </tr>
+  </thead>
+  <tbody>`;
+
+  list.forEach((r,i)=>{
+    html += `<tr>
+      <td>${i+1}</td>
       <td>${r.symbol}</td>
       <td>${r.pct.toFixed(2)}%</td>
-      <td class="${r.volAI.color === 'RED' ? 'bad' : 'ok'}">
-        ${r.volAI.color}
-      </td>
+      <td>${r.volAI.color}</td>
       <td>${r.volAI.location}</td>
-      <td>${fmt(r.volAI.volume)}</td>
       <td>${r.volAI.meaning}</td>
-      <td>${r.volAI.bias}</td>
+      <td><strong>${r.probability}%</strong></td>
     </tr>`;
-  }
+  });
 
   html += '</tbody></table></div>';
-  document.getElementById('aiTop30Results').innerHTML = html;
-    }
+  el.innerHTML = html;
+}
 
     // Controls
     document.getElementById('startBtn').addEventListener('click', ()=>{

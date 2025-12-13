@@ -510,21 +510,35 @@
 
   const gIdx = absorptionMatch.greenIndex24h;
   const gLow = absorptionMatch.greenCandle.low;
+  const gHigh = absorptionMatch.greenCandle.high;
+
+  let breaks = 0;
+  let acceptedAbove = false;
 
   for (let i = gIdx + 1; i < last24h.length; i++) {
     const c = last24h[i];
 
-    // ❌ structure failed
-    if (c.low < gLow) return null;
+    // allow one liquidity sweep
+    if (c.low < gLow) {
+      breaks++;
+      if (breaks > 1) return null;
+    }
+
+    // acceptance signal
+    if (c.close > gHigh) {
+      acceptedAbove = true;
+    }
   }
 
-  // ✅ CONTINUATION CONFIRMED
+  if (!acceptedAbove) return null;
+
   return {
-    ...absorptionMatch,               // 🔥 KEEP FULL STRUCTURE
+    ...absorptionMatch,
     found: true,
     type: 'post_absorption_continuation',
     label: 'Post-absorption continuation',
-    intent: 'Trend continuation'
+    intent: 'Trend continuation',
+    confirmation: 'Accepted above absorption high'
   };
 }
       

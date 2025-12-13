@@ -770,25 +770,27 @@ const counts = {
   topNotRed: 0,
   topRed: 0,
   greenAbsorb: 0,
-  postCont: 0,
   redFail: 0
 };
 
 const topNotRedSymbols = [];
 const topRedSymbols = [];
 const greenAbsorbSymbols = [];
-const postContSymbols = [];
 const redFailSymbols = [];
 
 for (const p of emaOkSymbols) {
   try {
     const kl = klinesMap[p.symbol];
 
+    // detector A: green absorption
     const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
-    if (!match) continue;
 
+    // detector B: red failure absorption
     const redFail = detectRedFailureAbsorption(kl);
+
     const postAbsorb = detectPostAbsorptionContinuation(kl, match);
+
+    if (!match) continue;
 
     // 1️⃣ Top volume NOT red
     if (match.reason === 'top_volume_not_red') {
@@ -801,25 +803,8 @@ for (const p of emaOkSymbols) {
     counts.topRed++;
     topRedSymbols.push(p.symbol);
 
-    // 3️⃣ GREEN absorption detected
+    // 3️⃣ GREEN absorption (strong bullish)
     if (match.found === true && match.type === 'absorption_lower_price') {
-
-      // 🟢🟢 3a️⃣ POST-ABSORPTION CONTINUATION (highest priority)
-if (postAbsorb && postAbsorb.found === true) {
-  counts.postCont++;
-  postContSymbols.push(p.symbol);
-
-  results.push({
-    symbol: p.symbol,
-    pct: p.pct,
-    match: postCont,
-    absorptionType: 'post-continuation'
-  });
-
-  continue;
-}
-
-      // 🟢 3b️⃣ Normal green absorption
       counts.greenAbsorb++;
       greenAbsorbSymbols.push(p.symbol);
 
@@ -830,10 +815,19 @@ if (postAbsorb && postAbsorb.found === true) {
         absorptionType: 'green'
       });
 
-      continue;
+      continue; // ⬅️ IMPORTANT: do not fall through
     }
 
-    // 4️⃣ RED failure absorption (cooling / compression)
+    if (postAbsorb && postAbsorb.found === true) {
+  results.push({
+    symbol: p.symbol,
+    pct: p.pct,
+    match,
+    absorptionType: 'post-continuation'
+  });
+    }
+
+    // 4️⃣ RED failure absorption (cooling, not breakout)
     if (redFail && redFail.found === true) {
       counts.redFail++;
       redFailSymbols.push(p.symbol);
@@ -849,8 +843,8 @@ if (postAbsorb && postAbsorb.found === true) {
   } catch (e) {
     console.warn('Phase B failed:', p.symbol, e.message);
   }
-}  
-       
+}
+
     
       // update ignored lists UI
 document.getElementById('cntTopNotRed').textContent = counts.topNotRed;

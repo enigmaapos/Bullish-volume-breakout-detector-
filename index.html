@@ -578,7 +578,7 @@ function detectAscendingRedVolumeAbsorption(
   klines,
   minRedCount = 3,
   greenVolRatio = 1.0,
-  redFailRatio = 0.65        // 🔥 NEW: max allowed red response (60%)
+  redFailRatio = 0.5        // 🔥 NEW: max allowed red response (60%)
 ){
   if (!klines || klines.length < 96) return null;
 

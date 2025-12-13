@@ -197,19 +197,6 @@
   <div id="marketContext">—</div>
     </div>
 
-    <div class="card">
-  <div class="section-title">
-    <h2>Top 30 — Highest 24h Volume (AI Context)</h2>
-    <small>Highest volume candle per symbol (red or green)</small>
-  </div>
-  <div id="aiTop30Results">No data yet</div>
-    </div>
-
-    <div class="card">
-      <h2>EMA-Positive Symbols (phase A)</h2>
-      <div id="emaSymbols">None yet</div>
-    </div>
-
 
     <div class="card">
   <h2>Volume Structure Groups (24h)</h2>
@@ -283,6 +270,19 @@
     </div>
   </div>
 </div>
+
+    <div class="card">
+  <div class="section-title">
+    <h2>Top 30 — Highest 24h Volume (AI Context)</h2>
+    <small>Highest volume candle per symbol (red or green)</small>
+  </div>
+  <div id="aiTop30Results">No data yet</div>
+    </div>
+
+    <div class="card">
+      <h2>EMA-Positive Symbols (phase A)</h2>
+      <div id="emaSymbols">None yet</div>
+    </div>
     
 
     <div class="card">
@@ -384,76 +384,74 @@
     }
 
     
-  // detector (kept same as in your last version)  
-function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
+// detector (kept same as in your last version)
+    function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
+  if (!klines || klines.length < 96) return null;
 
-if (!klines || klines.length < 96) return null;
+  const last24h = klines.slice(-96).map(c => ({
+    openTime: c.openTime,
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    baseVol: safeNum(c.baseVol)
+  }));
 
-const last24h = klines.slice(-96).map(c => ({
-openTime: c.openTime,
-open: safeNum(c.open),
-high: safeNum(c.high),
-low: safeNum(c.low),
-close: safeNum(c.close),
-baseVol: safeNum(c.baseVol)
-}));
+  // 1️⃣ Find highest-volume candle in 24h
+  let top = last24h[0];
+  let topIdx = 0;
 
-// 1️⃣ Find highest-volume candle in 24h
-let top = last24h[0];
-let topIdx = 0;
+  for (let i = 1; i < last24h.length; i++) {
+    if (last24h[i].baseVol > top.baseVol) {
+      top = last24h[i];
+      topIdx = i;
+    }
+  }
 
-for (let i = 1; i < last24h.length; i++) {
-if (last24h[i].baseVol > top.baseVol) {
-top = last24h[i];
-topIdx = i;
-}
-}
+  // Must be RED
+  if (top.close >= top.open) {
+    return {
+      found: false,
+      reason: 'top_volume_not_red',
+      topCandle: top
+    };
+  }
 
-// Must be RED
-if (top.close >= top.open) {
-return {
-found: false,
-reason: 'top_volume_not_red',
-topCandle: top
-};
-}
+  // 2️⃣ Look for GREEN absorber AFTER it
+  for (let j = topIdx + 1; j < last24h.length; j++) {
+    const g = last24h[j];
 
-// 2️⃣ Look for GREEN absorber AFTER it
-for (let j = topIdx + 1; j < last24h.length; j++) {
-const g = last24h[j];
+    if (g.close <= g.open) continue;                 // must be green
+    if (g.baseVol < top.baseVol * volRatio) continue; // must absorb volume
 
-if (g.close <= g.open) continue;                 // must be green  
-if (g.baseVol < top.baseVol * volRatio) continue; // must absorb volume  
+    // ✅ THIS IS YOUR ONLY VALID CONDITION
+    if (g.high < top.high) {
+      return {
+        found: true,
+        type: 'absorption_lower_price',
+        intent: 'Cooling / Re-accumulation',
+        strength: 'Moderate',
+        redIndex24h: topIdx,
+        redCandle: top,
+        greenIndex24h: j,
+        greenCandle: g,
+        redBaseVol: top.baseVol,
+        greenBaseVol: g.baseVol
+      };
+    }
 
-// ✅ THIS IS YOUR ONLY VALID CONDITION  
-if (g.high < top.high) {  
-  return {  
-    found: true,  
-    type: 'absorption_lower_price',  
-    intent: 'Cooling / Re-accumulation',  
-    strength: 'Moderate',  
-    redIndex24h: topIdx,  
-    redCandle: top,  
-    greenIndex24h: j,  
-    greenCandle: g,  
-    redBaseVol: top.baseVol,  
-    greenBaseVol: g.baseVol  
-  };  
-}  
+    // If volume breaks but price goes higher → ignore
+    return {
+      found: false,
+      reason: 'volume_break_but_price_higher'
+    };
+  }
 
-// If volume breaks but price goes higher → ignore  
-return {  
-  found: false,  
-  reason: 'volume_break_but_price_higher'  
-};
-
-}
-
-return {
-found: false,
-reason: 'no_later_green_absorber'
-};
-}
+  return {
+    found: false,
+    reason: 'no_later_green_absorber'
+  };
+    }
 
 
     

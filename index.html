@@ -127,6 +127,28 @@
     /* Accessibility focus */
     .pill:focus,.pill:hover{outline:none;border-color:rgba(255,255,255,.12)}
     button:focus{outline:2px solid rgba(45,212,191,.12)}
+
+    /* ===== AI TABLE COLORS ===== */
+
+/* Probability */
+.prob-high { color:#22c55e; font-weight:700; }   /* green */
+.prob-good { color:#eab308; font-weight:700; }   /* yellow */
+.prob-mid  { color:#fb923c; }                    /* orange */
+.prob-low  { color:#ef4444; }                    /* red */
+
+/* Volume color */
+.vol-green { color:#22c55e; font-weight:600; }
+.vol-red   { color:#ef4444; font-weight:600; }
+
+/* Location */
+.loc-low  { color:#22c55e; }
+.loc-mid  { color:#eab308; }
+.loc-high { color:#ef4444; }
+
+/* Meaning */
+.mean-bull    { color:#22c55e; }
+.mean-bear    { color:#ef4444; }
+.mean-caution { color:#eab308; }
   </style>
 </head>
 <body>
@@ -582,19 +604,16 @@ for(const p of topAfterBlacklist){
   }
 }
 
-      aiTop30.forEach(x => {
-  x.probability = scoreVolumeAI(x.volAI);
-});
+      const aiByProbability = [...aiTop30]
+  .sort((a,b)=> b.probability - a.probability)
+  .slice(0, 10);
 
-// sort by probability DESC
-aiTop30.sort((a, b) => b.probability - a.probability);
+const aiByVolume = [...aiTop30]
+  .sort((a,b)=> b.volAI.volume - a.volAI.volume)
+  .slice(0, 30);
 
-// keep top 30 (or top 10)
-const aiTop10 = aiTop30.slice(0, 10);
-
-// sort by highest 24h volume
-aiTop30.sort((a,b)=> b.volAI.volume - a.volAI.volume);
-
+renderAITop30(aiByProbability); // main table
+      
 // render AI context table
 renderAITop30(aiTop30.slice(0, 30));
 
@@ -762,6 +781,25 @@ renderAITop30(aiTop30.slice(0, 30));
     return;
   }
 
+  const probClass = p =>
+    p >= 80 ? 'prob-high' :
+    p >= 65 ? 'prob-good' :
+    p >= 50 ? 'prob-mid'  :
+              'prob-low';
+
+  const locClass = l =>
+    l === 'LOW'  ? 'loc-low' :
+    l === 'MID'  ? 'loc-mid' :
+                   'loc-high';
+
+  const meaningClass = m => {
+    const t = m.toLowerCase();
+    if(t.includes('bullish')) return 'mean-bull';
+    if(t.includes('bearish')) return 'mean-bear';
+    if(t.includes('caution')) return 'mean-caution';
+    return '';
+  };
+
   let html = `<div class="table-wrap">
   <table>
   <thead>
@@ -769,7 +807,7 @@ renderAITop30(aiTop30.slice(0, 30));
       <th>#</th>
       <th>Symbol</th>
       <th>24h%</th>
-      <th>Vol Color</th>
+      <th>Vol</th>
       <th>Location</th>
       <th>Meaning</th>
       <th>Probability</th>
@@ -780,12 +818,24 @@ renderAITop30(aiTop30.slice(0, 30));
   list.forEach((r,i)=>{
     html += `<tr>
       <td>${i+1}</td>
-      <td>${r.symbol}</td>
+      <td><strong>${r.symbol}</strong></td>
       <td>${r.pct.toFixed(2)}%</td>
-      <td>${r.volAI.color}</td>
-      <td>${r.volAI.location}</td>
-      <td>${r.volAI.meaning}</td>
-      <td><strong>${r.probability}%</strong></td>
+
+      <td class="${r.volAI.color === 'GREEN' ? 'vol-green' : 'vol-red'}">
+        ${r.volAI.color}
+      </td>
+
+      <td class="${locClass(r.volAI.location)}">
+        ${r.volAI.location}
+      </td>
+
+      <td class="${meaningClass(r.volAI.meaning)}">
+        ${r.volAI.meaning}
+      </td>
+
+      <td class="${probClass(r.probability)}">
+        <strong>${r.probability}%</strong>
+      </td>
     </tr>`;
   });
 

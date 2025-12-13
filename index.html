@@ -766,6 +766,35 @@ renderAITop30(aiSorted);
   return Math.max(0, Math.min(100, score));
     }
 
+
+    function interpretProbability(p){
+  if(p >= 80) return {
+    label: 'Strong continuation',
+    note: 'Accumulation / Trend healthy',
+    cls: 'prob-high'
+  };
+  if(p >= 65) return {
+    label: 'Continuation likely',
+    note: 'Trend still supported',
+    cls: 'prob-good'
+  };
+  if(p >= 50) return {
+    label: 'Neutral / transition',
+    note: 'Wait for confirmation',
+    cls: 'prob-mid'
+  };
+  if(p >= 35) return {
+    label: 'Exhaustion forming',
+    note: 'Pullback or range likely',
+    cls: 'prob-low'
+  };
+  return {
+    label: 'Distribution',
+    note: 'High reversal / trap risk',
+    cls: 'prob-low'
+  };
+    }
+
     function renderAITop30(list){
   const el = document.getElementById('aiTop30Results');
 
@@ -827,8 +856,9 @@ renderAITop30(aiSorted);
       </td>
 
       <td class="${probClass(r.probability)}">
-        <strong>${r.probability}%</strong>
-      </td>
+  <strong>${r.probability}%</strong>
+  <small>${interp.label}</small>
+</td>
     </tr>`;
   });
 

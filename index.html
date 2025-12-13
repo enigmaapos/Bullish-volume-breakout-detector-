@@ -226,13 +226,25 @@
     <div id="topRedList" class="list-inline"><span class="muted">—</span></div>
   </div>
 
-  <div style="margin-top:10px">
-    <div><strong>Red volume absorbed (green breaks at LOWER price)</strong>
-      (<span id="cntAbsorbed">0</span>):
-    </div>
-    <div id="absorbedList" class="list-inline"><span class="muted">—</span></div>
+<div style="margin-top:10px">
+  <div>
+    <strong>🟢 Green absorption (re-accumulation)</strong>
+    (<span id="cntGreenAbsorb">0</span>):
   </div>
-    </div>
+  <div id="greenAbsorbList" class="list-inline">
+    <span class="muted">—</span>
+  </div>
+</div>
+
+<div style="margin-top:10px">
+  <div>
+    <strong>🟡 Red failure absorption (cooling)</strong>
+    (<span id="cntRedFail">0</span>):
+  </div>
+  <div id="redFailList" class="list-inline">
+    <span class="muted">—</span>
+  </div>
+</div>
 
     <div class="card">
       <h2>Quick Test (single symbol)</h2>
@@ -674,25 +686,31 @@ renderAITop30(aiSorted);
 renderMarketContext(marketSummary);
 
       
-      setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
+     setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
 
 const results = [];
 
 const counts = {
   topNotRed: 0,
   topRed: 0,
-  absorbed: 0
+  greenAbsorb: 0,
+  redFail: 0
 };
 
 const topNotRedSymbols = [];
 const topRedSymbols = [];
-const absorbedSymbols = [];
+const greenAbsorbSymbols = [];
+const redFailSymbols = [];
 
-// ✅ SINGLE CLEAN LOOP
 for (const p of emaOkSymbols) {
   try {
     const kl = klinesMap[p.symbol];
+
+    // detector A: green absorption
     const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+
+    // detector B: red failure absorption
+    const redFail = detectRedFailureAbsorption(kl);
 
     if (!match) continue;
 
@@ -707,30 +725,33 @@ for (const p of emaOkSymbols) {
     counts.topRed++;
     topRedSymbols.push(p.symbol);
 
-    // 3️⃣ VALID absorption (only bullish case)
+    // 3️⃣ GREEN absorption (strong bullish)
     if (match.found === true && match.type === 'absorption_lower_price') {
-      counts.absorbed++;
-      absorbedSymbols.push(p.symbol);
+      counts.greenAbsorb++;
+      greenAbsorbSymbols.push(p.symbol);
 
       results.push({
         symbol: p.symbol,
         pct: p.pct,
-        match
+        match,
+        absorptionType: 'green'
       });
+
+      continue; // ⬅️ IMPORTANT: do not fall through
     }
 
-    const absorption = detectRedFailureAbsorption(kl);
+    // 4️⃣ RED failure absorption (cooling, not breakout)
+    if (redFail && redFail.found === true) {
+      counts.redFail++;
+      redFailSymbols.push(p.symbol);
 
-if(absorption){
-  absorbedSymbols.push(p.symbol);
-  counts.absorbed++;
-
-  results.push({
-    symbol: p.symbol,
-    pct: p.pct,
-    match: absorption
-  });
-}
+      results.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        match: redFail,
+        absorptionType: 'red-failure'
+      });
+    }
 
   } catch (e) {
     console.warn('Phase B failed:', p.symbol, e.message);
@@ -739,21 +760,31 @@ if(absorption){
       
     
       // update ignored lists UI
-      document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
+      // Top volume NOT red
+document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
 document.getElementById('topNotRedList').innerHTML =
   topNotRedSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
+// Top volume IS red
 document.getElementById('cntTopRed').textContent = counts.topRed;
 document.getElementById('topRedList').innerHTML =
   topRedSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
-document.getElementById('cntAbsorbed').textContent = counts.absorbed;
-document.getElementById('absorbedList').innerHTML =
-  absorbedSymbols.map(s =>
+// 🟢 Green absorption (bullish)
+document.getElementById('cntGreenAbsorb').textContent = counts.greenAbsorb;
+document.getElementById('greenAbsorbList').innerHTML =
+  greenAbsorbSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
+// 🟡 Red failure absorption (cooling)
+document.getElementById('cntRedFail').textContent = counts.redFail;
+document.getElementById('redFailList').innerHTML =
+  redFailSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
     

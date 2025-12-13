@@ -847,35 +847,41 @@ for (const p of emaOkSymbols) {
 
     
       // update ignored lists UI
+      // Top volume NOT red
 document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
 document.getElementById('topNotRedList').innerHTML =
   topNotRedSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
+// Top volume IS red
 document.getElementById('cntTopRed').textContent = counts.topRed;
 document.getElementById('topRedList').innerHTML =
   topRedSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
+// 🟢 Green absorption (bullish)
 document.getElementById('cntGreenAbsorb').textContent = counts.greenAbsorb;
 document.getElementById('greenAbsorbList').innerHTML =
   greenAbsorbSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
-document.getElementById('cntPostCont').textContent = counts.postCont;
-document.getElementById('postContList').innerHTML =
-  postContSymbols.map(s =>
-    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
-  ).join('') || '<span class="muted">—</span>';
-
+// 🟡 Red failure absorption (cooling)
 document.getElementById('cntRedFail').textContent = counts.redFail;
 document.getElementById('redFailList').innerHTML =
   redFailSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
+    
+    const el = document.getElementById('matches');
+      if(results.length === 0){
+        el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
+        document.getElementById('matchSummary').textContent = `0 matches`;
+        setStatus('Scan complete — no matches');
+        return;
+      }
 
       
     const el = document.getElementById('matches');

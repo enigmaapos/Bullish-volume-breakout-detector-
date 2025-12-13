@@ -775,62 +775,65 @@ for (const p of emaOkSymbols) {
     const postAbsorb = detectPostAbsorptionContinuation(kl, match);
 
     // 1️⃣ Top volume NOT red
-if (match.reason === 'top_volume_not_red') {
-  counts.topNotRed++;
-  topNotRedSymbols.push(p.symbol);
-  continue;
-}
+    if (match.reason === 'top_volume_not_red') {
+      counts.topNotRed++;
+      topNotRedSymbols.push(p.symbol);
+      continue;
+    }
 
-// 2️⃣ Top volume IS red
-counts.topRed++;
-topRedSymbols.push(p.symbol);
+    // 2️⃣ Top volume IS red
+    counts.topRed++;
+    topRedSymbols.push(p.symbol);
 
-// 🟢🟢 3️⃣ POST-ABSORPTION CONTINUATION (highest confidence)
-if (postAbsorb && postAbsorb.found === true) {
-  counts.postCont++;
-  postContSymbols.push(p.symbol);
+    // 3️⃣ GREEN absorption detected
+    if (match.found === true && match.type === 'absorption_lower_price') {
 
-  results.push({
-    symbol: p.symbol,
-    pct: p.pct,
-    match: postAbsorb,
-    absorptionType: 'post-continuation'
-  });
+      // 🟢🟢 3a️⃣ POST-ABSORPTION CONTINUATION (highest priority)
+      if (postAbsorb && postAbsorb.found === true) {
+        counts.postCont++;
+        postContSymbols.push(p.symbol);
 
-  continue;
-}
+        results.push({
+  symbol: p.symbol,
+  pct: p.pct,
+  match: postAbsorb,   // ✅ USE FULL STRUCTURE
+  absorptionType: 'post-continuation'
+});
 
-// 🟢 4️⃣ GREEN ABSORPTION (but not yet continued)
-if (match.found === true && match.type === 'absorption_lower_price') {
-  counts.greenAbsorb++;
-  greenAbsorbSymbols.push(p.symbol);
+        continue;
+      }
 
-  results.push({
-    symbol: p.symbol,
-    pct: p.pct,
-    match,
-    absorptionType: 'green'
-  });
+      // 🟢 3b️⃣ Normal green absorption
+      counts.greenAbsorb++;
+      greenAbsorbSymbols.push(p.symbol);
 
-  continue;
-}
+      results.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        match,
+        absorptionType: 'green'
+      });
 
-// 🟡 5️⃣ RED FAILURE ABSORPTION (cooling)
-if (redFail && redFail.found === true) {
-  counts.redFail++;
-  redFailSymbols.push(p.symbol);
+      continue;
+    }
 
-  results.push({
-    symbol: p.symbol,
-    pct: p.pct,
-    match: redFail,
-    absorptionType: 'red-failure'
-  });
-}
-    } catch (e) {
+    // 4️⃣ RED failure absorption (cooling / compression)
+    if (redFail && redFail.found === true) {
+      counts.redFail++;
+      redFailSymbols.push(p.symbol);
+
+      results.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        match: redFail,
+        absorptionType: 'red-failure'
+      });
+    }
+
+  } catch (e) {
     console.warn('Phase B failed:', p.symbol, e.message);
   }
-} // ✅ CLOSE for-loop
+}  
        
     
       // update ignored lists UI
@@ -899,13 +902,10 @@ document.getElementById('redFailList').innerHTML =
   const m = r.match;
 
   // 🛡️ HARD GUARD — prevents undefined.high crash
-  if (
-  r.absorptionType !== 'red-failure' &&
-  (!m || !m.redCandle || !m.greenCandle)
-) {
-  console.warn('Invalid match skipped:', r.symbol, r);
-  continue;
-}
+  if (!m || !m.redCandle || !m.greenCandle) {
+    console.warn('Invalid match skipped:', r.symbol, r);
+    continue;
+  }
 
   // 🔔 ONLY GREEN ABSORPTION NOTIFICATION
   if (r.absorptionType === 'green') {

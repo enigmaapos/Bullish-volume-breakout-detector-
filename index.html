@@ -171,6 +171,14 @@
     </div>
 
     <div class="card">
+  <div class="section-title">
+    <h2>Top 30 — Highest 24h Volume (AI Context)</h2>
+    <small>Highest volume candle per symbol (red or green)</small>
+  </div>
+  <div id="aiTop30Results">No data yet</div>
+    </div>
+
+    <div class="card">
       <h2>EMA-Positive Symbols (phase A)</h2>
       <div id="emaSymbols">None yet</div>
     </div>
@@ -550,6 +558,35 @@ document.getElementById('dominance24h').textContent = domText;
       document.getElementById('emaSymbols').textContent = emaOkSymbols.length ? emaOkSymbols.map(s=>s.symbol).join(', ') : 'None';
 
       if(emaOkSymbols.length === 0){ setStatus('No EMA-OK'); document.getElementById('matches').innerHTML = `<div>No EMA-OK symbols detected (fetch failed: ${fetchFailed})</div>`; return; }
+     
+      // =====================
+// TOP 30 AI CONTEXT LIST
+// =====================
+const aiTop30 = [];
+
+for(const p of topAfterBlacklist){
+  try{
+    // reuse already-fetched klines when possible
+    const kl = klinesMap[p.symbol] || await fetchKlines(p.symbol);
+    const volAI = detect24hVolumeLocationAI(kl);
+
+    if(volAI){
+      aiTop30.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        volAI
+      });
+    }
+  }catch(e){
+    console.warn('AI context failed:', p.symbol);
+  }
+}
+
+// sort by highest 24h volume
+aiTop30.sort((a,b)=> b.volAI.volume - a.volAI.volume);
+
+// render AI context table
+renderAITop30(aiTop30.slice(0, 30));
 
       setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
       const results = [];
@@ -683,6 +720,48 @@ document.getElementById('dominance24h').textContent = domText;
         const pos = offset + idx24;
         return fullKlines[pos] ? fullKlines[pos].openTime : null;
       }catch(e){ return null; }
+    }
+
+    function renderAITop30(results){
+  if(!results.length){
+    document.getElementById('aiTop30Results').innerHTML = 'No data';
+    return;
+  }
+
+  let html = `
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>24h %</th>
+        <th>Top Vol Color</th>
+        <th>Location</th>
+        <th>Volume</th>
+        <th>Meaning</th>
+        <th>Bias</th>
+      </tr>
+    </thead>
+    <tbody>
+  `;
+
+  for(const r of results){
+    html += `
+    <tr>
+      <td>${r.symbol}</td>
+      <td>${r.pct.toFixed(2)}%</td>
+      <td class="${r.volAI.color === 'RED' ? 'bad' : 'ok'}">
+        ${r.volAI.color}
+      </td>
+      <td>${r.volAI.location}</td>
+      <td>${fmt(r.volAI.volume)}</td>
+      <td>${r.volAI.meaning}</td>
+      <td>${r.volAI.bias}</td>
+    </tr>`;
+  }
+
+  html += '</tbody></table></div>';
+  document.getElementById('aiTop30Results').innerHTML = html;
     }
 
     // Controls

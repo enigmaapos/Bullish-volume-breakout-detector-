@@ -617,18 +617,17 @@ function detectRedHighGreenLowTotalBreakout(
     if (g.vol <= red.vol) continue;
 
     return {
-      found: true,
-      type: 'red_high_green_low_total_breakout',
-      label: 'Sell-side climax → volume breakout',
-      intent: 'Strong accumulation / reversal',
-      redCandle: red,
-      greenCandle: g,
-      redVol: red.vol,
-      greenVol: g.vol,
-      dominance: ((g.vol / red.vol) * 100).toFixed(0) + '%',
-      priceRelation: 'green_below_red_high'
-    };
-  }
+  found: true,
+  type: 'sell_climax',
+  label: 'Sell-side climax → volume breakout',
+  intent: 'Strong accumulation / reversal',
+
+  redCandle: red,
+  greenCandle: g,
+
+  redVol: red.vol,
+  greenVol: g.vol
+};
 
   return null;
 }
@@ -1039,25 +1038,28 @@ RedVol: ${fmt(m.redBaseVol)} → GreenVol: ${fmt(m.greenBaseVol)}`,
     );
   }
 
-  html += `<tr class="match-row">
-    <td>${r.symbol}</td>
-    <td>${Number(r.pct).toFixed(2)}%</td>
-    <td>${m.redCount24h ?? '-'}</td>
-    <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
-    <td>${fmt(m.redBaseVol)}</td>
-    <td>${fmtPrice(m.redCandle.high)}</td>
-    <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
-    <td class="ok">${fmt(m.greenBaseVol)}</td>
-    <td>${fmtPrice(m.greenCandle.high)}</td>
+  const red = m.redCandle;
+const green = m.greenCandle;
 
-    <td>${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}</td>
-    <td>${r.volAI ? r.volAI.meaning : '-'}</td>
+html += `<tr class="match-row">
+  <td>${r.symbol}</td>
+  <td>${Number(r.pct).toFixed(2)}%</td>
 
-    <td>
-      <button onclick="openSymbol('${r.symbol}')">Open</button>
-    </td>
-  </tr>`;
-}
+  <td>-</td>
+
+  <td>${red ? fmtTime(red.openTime) : '-'}</td>
+  <td>${red ? fmt(m.redVol ?? red.vol) : '-'}</td>
+  <td>${red ? fmtPrice(red.high) : '-'}</td>
+
+  <td>${green ? fmtTime(green.openTime) : '-'}</td>
+  <td class="ok">${green ? fmt(m.greenVol ?? green.vol) : '-'}</td>
+  <td>${green ? fmtPrice(green.high) : '-'}</td>
+
+  <td>${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}</td>
+  <td>${r.volAI ? r.volAI.meaning : '-'}</td>
+
+  <td><button onclick="openSymbol('${r.symbol}')">Open</button></td>
+</tr>`;
       
       html += '</tbody></table></div>';
       el.innerHTML = html;

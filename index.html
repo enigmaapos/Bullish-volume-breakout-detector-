@@ -603,7 +603,12 @@ for(const p of topAfterBlacklist){
     console.warn('AI context failed:', p.symbol);
   }
 }
+      
+const aiSorted = [...aiTop30]
+  .sort((a,b) => b.probability - a.probability)
+  .slice(0, 30);
 
+renderAITop30(aiSorted);
 
       setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
       const results = [];

@@ -588,7 +588,6 @@ const aiTop30 = [];
 
 for(const p of topAfterBlacklist){
   try{
-    // reuse already-fetched klines when possible
     const kl = klinesMap[p.symbol] || await fetchKlines(p.symbol);
     const volAI = detect24hVolumeLocationAI(kl);
 
@@ -596,7 +595,8 @@ for(const p of topAfterBlacklist){
       aiTop30.push({
         symbol: p.symbol,
         pct: p.pct,
-        volAI
+        volAI,
+        probability: scoreVolumeAI(volAI) // ✅ FIX
       });
     }
   }catch(e){
@@ -604,18 +604,6 @@ for(const p of topAfterBlacklist){
   }
 }
 
-      const aiByProbability = [...aiTop30]
-  .sort((a,b)=> b.probability - a.probability)
-  .slice(0, 10);
-
-const aiByVolume = [...aiTop30]
-  .sort((a,b)=> b.volAI.volume - a.volAI.volume)
-  .slice(0, 30);
-
-renderAITop30(aiByProbability); // main table
-      
-// render AI context table
-renderAITop30(aiTop30.slice(0, 30));
 
       setStatus(`Phase B: checking top-24h-vol-is-red then break on ${emaOkSymbols.length}`);
       const results = [];

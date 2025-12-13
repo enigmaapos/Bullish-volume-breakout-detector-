@@ -794,11 +794,11 @@ for (const p of emaOkSymbols) {
         postContSymbols.push(p.symbol);
 
         results.push({
-          symbol: p.symbol,
-          pct: p.pct,
-          match,
-          absorptionType: 'post-continuation'
-        });
+  symbol: p.symbol,
+  pct: p.pct,
+  match: postAbsorb,   // ✅ USE FULL STRUCTURE
+  absorptionType: 'post-continuation'
+});
 
         continue;
       }
@@ -897,7 +897,7 @@ document.getElementById('redFailList').innerHTML =
 </thead>
 <tbody>
 `;
-      for(const r of results){
+      
       for (const r of results) {
   const m = r.match;
 

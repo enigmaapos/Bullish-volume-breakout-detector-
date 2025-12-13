@@ -210,41 +210,69 @@
       <div id="emaSymbols">None yet</div>
     </div>
 
+
     <div class="card">
   <h2>Volume Structure Groups (24h)</h2>
   <div class="muted" style="margin-top:6px">
     Classification based on the highest-volume candle in the last 24h and its reaction.
   </div>
 
+  <!-- Top volume NOT red -->
   <div style="margin-top:10px">
-    <div><strong>Top volume is NOT red</strong> (<span id="cntTopNotRed">0</span>):</div>
-    <div id="topNotRedList" class="list-inline"><span class="muted">—</span></div>
+    <div>
+      <strong>Top volume is NOT red</strong>
+      (<span id="cntTopNotRed">0</span>):
+    </div>
+    <div id="topNotRedList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
   </div>
 
+  <!-- Top volume IS red -->
   <div style="margin-top:10px">
-    <div><strong>Top volume IS red</strong> (<span id="cntTopRed">0</span>):</div>
-    <div id="topRedList" class="list-inline"><span class="muted">—</span></div>
+    <div>
+      <strong>Top volume IS red</strong>
+      (<span id="cntTopRed">0</span>):
+    </div>
+    <div id="topRedList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
   </div>
 
-<div style="margin-top:10px">
-  <div>
-    <strong>🟢 Green absorption (re-accumulation)</strong>
-    (<span id="cntGreenAbsorb">0</span>):
+  <!-- Green absorption -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>🟢 Green absorption (re-accumulation)</strong>
+      (<span id="cntGreenAbsorb">0</span>):
+    </div>
+    <div id="greenAbsorbList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
   </div>
-  <div id="greenAbsorbList" class="list-inline">
-    <span class="muted">—</span>
+
+  <!-- Post-absorption continuation -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>🟢🟢 Post-absorption continuation</strong>
+      (<span id="cntPostCont">0</span>):
+    </div>
+    <div id="postContList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
+  </div>
+
+  <!-- Red failure absorption -->
+  <div style="margin-top:10px">
+    <div>
+      <strong>🟡 Red failure absorption (cooling)</strong>
+      (<span id="cntRedFail">0</span>):
+    </div>
+    <div id="redFailList" class="list-inline">
+      <span class="muted">—</span>
+    </div>
   </div>
 </div>
-
-<div style="margin-top:10px">
-  <div>
-    <strong>🟡 Red failure absorption (cooling)</strong>
-    (<span id="cntRedFail">0</span>):
-  </div>
-  <div id="redFailList" class="list-inline">
-    <span class="muted">—</span>
-  </div>
-</div>
+    
 
     <div class="card">
       <h2>Quick Test (single symbol)</h2>
@@ -465,7 +493,40 @@
 
   return null;
 }
-      
+
+
+    function detectPostAbsorptionContinuation(klines, absorptionMatch) {
+  if (!klines || !absorptionMatch) return null;
+  if (absorptionMatch.found !== true) return null;
+  if (absorptionMatch.type !== 'absorption_lower_price') return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    vol: safeNum(c.baseVol)
+  }));
+
+  const gIdx = absorptionMatch.greenIndex24h;
+  const gLow = absorptionMatch.greenCandle.low;
+
+  for (let i = gIdx + 1; i < last24h.length; i++) {
+    const c = last24h[i];
+
+    // ❌ structure failed
+    if (c.low < gLow) return null;
+  }
+
+  // ✅ CONTINUATION CONFIRMED
+  return {
+    ...absorptionMatch,               // 🔥 KEEP FULL STRUCTURE
+    found: true,
+    type: 'post_absorption_continuation',
+    label: 'Post-absorption continuation',
+    intent: 'Trend continuation'
+  };
+}
       
     function detect24hVolumeLocationAI(klines){
   if (!klines || klines.length < 96) return null;
@@ -685,8 +746,7 @@ renderAITop30(aiSorted);
       const marketSummary = analyzeMajorityContext(aiSorted);
 renderMarketContext(marketSummary);
 
-      
-     setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
+    setStatus(`Phase B: classifying volume structure on ${emaOkSymbols.length}`);
 
 const results = [];
 
@@ -694,25 +754,25 @@ const counts = {
   topNotRed: 0,
   topRed: 0,
   greenAbsorb: 0,
+  postCont: 0,
   redFail: 0
 };
 
 const topNotRedSymbols = [];
 const topRedSymbols = [];
 const greenAbsorbSymbols = [];
+const postContSymbols = [];
 const redFailSymbols = [];
 
 for (const p of emaOkSymbols) {
   try {
     const kl = klinesMap[p.symbol];
 
-    // detector A: green absorption
     const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
-
-    // detector B: red failure absorption
-    const redFail = detectRedFailureAbsorption(kl);
-
     if (!match) continue;
+
+    const redFail = detectRedFailureAbsorption(kl);
+    const postAbsorb = detectPostAbsorptionContinuation(kl, match);
 
     // 1️⃣ Top volume NOT red
     if (match.reason === 'top_volume_not_red') {
@@ -725,8 +785,25 @@ for (const p of emaOkSymbols) {
     counts.topRed++;
     topRedSymbols.push(p.symbol);
 
-    // 3️⃣ GREEN absorption (strong bullish)
+    // 3️⃣ GREEN absorption detected
     if (match.found === true && match.type === 'absorption_lower_price') {
+
+      // 🟢🟢 3a️⃣ POST-ABSORPTION CONTINUATION (highest priority)
+      if (postAbsorb && postAbsorb.found === true) {
+        counts.postCont++;
+        postContSymbols.push(p.symbol);
+
+        results.push({
+  symbol: p.symbol,
+  pct: p.pct,
+  match: postAbsorb,   // ✅ USE FULL STRUCTURE
+  absorptionType: 'post-continuation'
+});
+
+        continue;
+      }
+
+      // 🟢 3b️⃣ Normal green absorption
       counts.greenAbsorb++;
       greenAbsorbSymbols.push(p.symbol);
 
@@ -737,10 +814,10 @@ for (const p of emaOkSymbols) {
         absorptionType: 'green'
       });
 
-      continue; // ⬅️ IMPORTANT: do not fall through
+      continue;
     }
 
-    // 4️⃣ RED failure absorption (cooling, not breakout)
+    // 4️⃣ RED failure absorption (cooling / compression)
     if (redFail && redFail.found === true) {
       counts.redFail++;
       redFailSymbols.push(p.symbol);
@@ -756,38 +833,41 @@ for (const p of emaOkSymbols) {
   } catch (e) {
     console.warn('Phase B failed:', p.symbol, e.message);
   }
-}
-      
+}  
+       
     
       // update ignored lists UI
-      // Top volume NOT red
 document.getElementById('cntTopNotRed').textContent = counts.topNotRed;
 document.getElementById('topNotRedList').innerHTML =
   topNotRedSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
-// Top volume IS red
 document.getElementById('cntTopRed').textContent = counts.topRed;
 document.getElementById('topRedList').innerHTML =
   topRedSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
-// 🟢 Green absorption (bullish)
 document.getElementById('cntGreenAbsorb').textContent = counts.greenAbsorb;
 document.getElementById('greenAbsorbList').innerHTML =
   greenAbsorbSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
 
-// 🟡 Red failure absorption (cooling)
+document.getElementById('cntPostCont').textContent = counts.postCont;
+document.getElementById('postContList').innerHTML =
+  postContSymbols.map(s =>
+    `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
+  ).join('') || '<span class="muted">—</span>';
+
 document.getElementById('cntRedFail').textContent = counts.redFail;
 document.getElementById('redFailList').innerHTML =
   redFailSymbols.map(s =>
     `<span class="pill" onclick="openSymbol('${s}')">${s}</span>`
   ).join('') || '<span class="muted">—</span>';
-    
+
+      
     const el = document.getElementById('matches');
       if(results.length === 0){
         el.innerHTML = `<div>No matches detected. EMA-OK checked: ${emaOkSymbols.length} — fetch failed: ${fetchFailed}</div>`;
@@ -817,8 +897,15 @@ document.getElementById('redFailList').innerHTML =
 </thead>
 <tbody>
 `;
-      for(const r of results){
-        const m = r.match;
+      
+      for (const r of results) {
+  const m = r.match;
+
+  // 🛡️ HARD GUARD — prevents undefined.high crash
+  if (!m || !m.redCandle || !m.greenCandle) {
+    console.warn('Invalid match skipped:', r.symbol, r);
+    continue;
+  }
 
   // 🔔 ONLY GREEN ABSORPTION NOTIFICATION
   if (r.absorptionType === 'green') {
@@ -829,29 +916,26 @@ RedVol: ${fmt(m.redBaseVol)} → GreenVol: ${fmt(m.greenBaseVol)}`,
       r.symbol
     );
   }
-        
-        html += `<tr class="match-row">
-  <td>${r.symbol}</td>
-  <td>${Number(r.pct).toFixed(2)}%</td>
-  <td>${m.redCount24h ?? '-'}</td>
-  <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
-  <td>${fmt(m.redBaseVol)}</td>
-  <td>${fmtPrice(m.redCandle.high)}</td>
-  <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
-  <td class="ok">${fmt(m.greenBaseVol)}</td>
-  <td>${fmtPrice(m.greenCandle.high)}</td>
 
-  <td>
-  ${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}
-</td>
-<td>
-  ${r.volAI ? r.volAI.meaning : '-'}
-</td>
+  html += `<tr class="match-row">
+    <td>${r.symbol}</td>
+    <td>${Number(r.pct).toFixed(2)}%</td>
+    <td>${m.redCount24h ?? '-'}</td>
+    <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
+    <td>${fmt(m.redBaseVol)}</td>
+    <td>${fmtPrice(m.redCandle.high)}</td>
+    <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
+    <td class="ok">${fmt(m.greenBaseVol)}</td>
+    <td>${fmtPrice(m.greenCandle.high)}</td>
 
-  <td>
-    <button onclick="openSymbol('${r.symbol}')">Open</button>
-  </td>
-</tr>`;}
+    <td>${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}</td>
+    <td>${r.volAI ? r.volAI.meaning : '-'}</td>
+
+    <td>
+      <button onclick="openSymbol('${r.symbol}')">Open</button>
+    </td>
+  </tr>`;
+}
       
       html += '</tbody></table></div>';
       el.innerHTML = html;

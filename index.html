@@ -342,100 +342,75 @@
     }
 
     // detector (kept same as in your last version)
-    function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio=1.0){
-      if(!klines || klines.length < 100) return null;
-      const last24h = klines.slice(-96);
-      if(last24h.length === 0) return null;
-      let dayHigh = -Infinity;
-      let redCount = 0;
-      last24h.forEach(c => {
-        const h = safeNum(c.high);
-        if(h > dayHigh) dayHigh = h;
-        if(safeNum(c.close) < safeNum(c.open)) redCount++;
-      });
-      const c = last24h.map(x => ({
-        openTime: x.openTime,
-        open: safeNum(x.open),
-        high: safeNum(x.high),
-        low: safeNum(x.low),
-        close: safeNum(x.close),
-        baseVol: safeNum(x.baseVol)
-      }));
-      let top = { idx: 0, candle: c[0] };
-      for(let i=1;i<c.length;i++){
-        if(c[i].baseVol > top.candle.baseVol) top = { idx:i, candle:c[i] };
-      }
-      const topIdx = top.idx;
-      const topC = top.candle;
-      if(!(topC.close < topC.open)){
-        return {
-          found: false,
-          reason: 'top_volume_not_red',
-          topIndex24h: topIdx, topCandle: topC,
-          topBaseVol: topC.baseVol,
-          dayHigh,
-          redCount24h: redCount
-        };
-      }
-      let firstGreen = null;
-      for(let j = topIdx + 1; j < c.length; j++){
-        const later = c[j];
-        if(later.close <= later.open) continue;
-        if(later.baseVol < topC.baseVol * volRatio) continue;
-        firstGreen = { idx: j, candle: later };
-        break;
-      }
-      if(!firstGreen) return {
-        found: false,
-        reason: 'no_later_green_breaker',
-        redCount24h: redCount,
-        topIndex24h: topIdx, topCandle: topC, topBaseVol: topC.baseVol, dayHigh
-      };
-      const g = firstGreen.candle;
-      if(g.high < topC.high){
-        return {
-          found: false,
-          reason: 'broken_earlier_at_lower_price',
-          redIndex24h: topIdx, redCandle: topC,
-          greenIndex24h: firstGreen.idx, greenCandle: g,
-          redBaseVol: topC.baseVol, greenBaseVol: g.baseVol,
-          dayHigh,
-          redCount24h: redCount
-        };
-      }
-      // 🔴🟢 Absorption at lower price (VALID but NOT breakout)
-if (g.high < topC.high) {
-  return {
-    found: true,                       // still a valid detection
-    type: 'absorption_lower_price',    // NEW classification
-    intent: 'Cooling / Re-accumulation',
-    strength: 'Moderate',
-    redIndex24h: topIdx,
-    redCandle: topC,
-    greenIndex24h: firstGreen.idx,
-    greenCandle: g,
-    redBaseVol: topC.baseVol,
-    greenBaseVol: g.baseVol,
-    dayHigh,
-    redCount24h: redCount
-  };
-}
-      // 🟢 True breakout absorption
-return {
-  found: true,
-  type: 'breakout_absorption',
-  intent: 'Bullish continuation',
-  strength: 'Strong',
-  redIndex24h: topIdx,
-  redCandle: topC,
-  greenIndex24h: firstGreen.idx,
-  greenCandle: g,
-  redBaseVol: topC.baseVol,
-  greenBaseVol: g.baseVol,
-  dayHigh,
-  redCount24h: redCount
-};
+    function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
+  if (!klines || klines.length < 96) return null;
 
+  const last24h = klines.slice(-96).map(c => ({
+    openTime: c.openTime,
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    baseVol: safeNum(c.baseVol)
+  }));
+
+  // 1️⃣ Find highest-volume candle in 24h
+  let top = last24h[0];
+  let topIdx = 0;
+
+  for (let i = 1; i < last24h.length; i++) {
+    if (last24h[i].baseVol > top.baseVol) {
+      top = last24h[i];
+      topIdx = i;
+    }
+  }
+
+  // Must be RED
+  if (top.close >= top.open) {
+    return {
+      found: false,
+      reason: 'top_volume_not_red',
+      topCandle: top
+    };
+  }
+
+  // 2️⃣ Look for GREEN absorber AFTER it
+  for (let j = topIdx + 1; j < last24h.length; j++) {
+    const g = last24h[j];
+
+    if (g.close <= g.open) continue;                 // must be green
+    if (g.baseVol < top.baseVol * volRatio) continue; // must absorb volume
+
+    // ✅ THIS IS YOUR ONLY VALID CONDITION
+    if (g.high < top.high) {
+      return {
+        found: true,
+        type: 'absorption_lower_price',
+        intent: 'Cooling / Re-accumulation',
+        strength: 'Moderate',
+        redIndex24h: topIdx,
+        redCandle: top,
+        greenIndex24h: j,
+        greenCandle: g,
+        redBaseVol: top.baseVol,
+        greenBaseVol: g.baseVol
+      };
+    }
+
+    // If volume breaks but price goes higher → ignore
+    return {
+      found: false,
+      reason: 'volume_break_but_price_higher'
+    };
+  }
+
+  return {
+    found: false,
+    reason: 'no_later_green_absorber'
+  };
+    }
+      
+      
     function detect24hVolumeLocationAI(klines){
   if (!klines || klines.length < 96) return null;
 

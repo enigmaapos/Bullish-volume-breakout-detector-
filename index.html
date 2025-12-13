@@ -392,6 +392,73 @@
       };
     }
 
+    function detect24hVolumeLocationAI(klines){
+  if (!klines || klines.length < 96) return null;
+
+  const last24h = klines.slice(-96).map(c => ({
+    open: safeNum(c.open),
+    high: safeNum(c.high),
+    low: safeNum(c.low),
+    close: safeNum(c.close),
+    baseVol: safeNum(c.baseVol),
+    openTime: c.openTime
+  }));
+
+  let dayHigh = -Infinity;
+  let dayLow  = Infinity;
+
+  for (const c of last24h) {
+    if (c.high > dayHigh) dayHigh = c.high;
+    if (c.low  < dayLow)  dayLow  = c.low;
+  }
+
+  // find highest volume candle
+  let top = last24h[0];
+  for (const c of last24h) {
+    if (c.baseVol > top.baseVol) top = c;
+  }
+
+  const isRed   = top.close < top.open;
+  const isGreen = top.close > top.open;
+
+  // location logic
+  const range = dayHigh - dayLow;
+  const mid = dayLow + range * 0.5;
+
+  let location = 'MID';
+  if (top.high <= mid) location = 'LOW';
+  else if (top.low >= mid) location = 'HIGH';
+
+  // AI interpretation
+  let meaning = 'Neutral';
+  let bias = 'Neutral';
+
+  if (isRed && location === 'LOW') {
+    meaning = 'Sell exhaustion → bullish';
+    bias = 'Bullish';
+  } else if (isRed && location === 'HIGH') {
+    meaning = 'Distribution → bearish';
+    bias = 'Bearish';
+  } else if (isGreen && location === 'LOW') {
+    meaning = 'Initiative buying → bullish';
+    bias = 'Bullish';
+  } else if (isGreen && location === 'HIGH') {
+    meaning = 'Buy climax → caution';
+    bias = 'Caution';
+  }
+
+  return {
+    color: isRed ? 'RED' : 'GREEN',
+    location,
+    meaning,
+    bias,
+    volume: top.baseVol,
+    time: top.openTime,
+    high: top.high,
+    low: top.low
+  };
+}
+
     // notification helpers (unchanged)
     async function makeBeep(){ try{ const ctx = new (window.AudioContext || window.webkitAudioContext)(); const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = 'sine'; o.frequency.value = 900; g.gain.value = 0.06; o.connect(g); g.connect(ctx.destination); o.start(); setTimeout(()=>{ o.stop(); ctx.close(); }, 180); }catch(e){ console.warn('beep failed', e); } }
     function notifyUser(title, body, symbol){
@@ -497,6 +564,7 @@ document.getElementById('dominance24h').textContent = domText;
         try{
           const kl = klinesMap[p.symbol];
           const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+          const volAI = detect24hVolumeLocationAI(kl);
           if(match && match.found){
             results.push({symbol:p.symbol, pct:p.pct, match});
             topVolRedSymbols.push(p.symbol);
@@ -531,22 +599,32 @@ document.getElementById('dominance24h').textContent = domText;
         return;
       }
 
-      let html = '<div class="table-wrap"><table><thead><tr><th>Symbol</th><th>24h%</th><th>RedCount(24h)</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>DayHigh</th><th>Actions</th></tr></thead><tbody>';
+      let html = '<div class="table-wrap"><table><thead><tr><th>Symbol</th><th>24h%</th><th>RedCount(24h)</th><th>Red time</th><th>Red Vol</th><th>Red high</th><th>Green time</th><th>Green Vol</th><th>Green high</th><th>Vol AI</th>
+<th>Meaning</th><th>Actions</th></tr></thead><tbody>';
       for(const r of results){
         const m = r.match;
         html += `<tr class="match-row">
-          <td>${r.symbol}</td>
-          <td>${Number(r.pct).toFixed(2)}%</td>
-          <td>${m.redCount24h ?? '-'}</td>
-          <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
-          <td>${fmt(m.redBaseVol)}</td>
-          <td>${fmtPrice(m.redCandle.high)}</td>
-          <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
-          <td class="ok">${fmt(m.greenBaseVol)}</td>
-          <td>${fmtPrice(m.greenCandle.high)}</td>
-          <td>${fmtPrice(m.dayHigh)}</td>
-          <td><button onclick="openSymbol('${r.symbol}')">Open</button> <button onclick="copySym('${r.symbol}')">Copy</button></td>
-        </tr>`;
+  <td>${r.symbol}</td>
+  <td>${Number(r.pct).toFixed(2)}%</td>
+  <td>${m.redCount24h ?? '-'}</td>
+  <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
+  <td>${fmt(m.redBaseVol)}</td>
+  <td>${fmtPrice(m.redCandle.high)}</td>
+  <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
+  <td class="ok">${fmt(m.greenBaseVol)}</td>
+  <td>${fmtPrice(m.greenCandle.high)}</td>
+
+  <td>
+    ${volAI.color} @ ${volAI.location}
+  </td>
+  <td>
+    ${volAI.meaning}
+  </td>
+
+  <td>
+    <button onclick="openSymbol('${r.symbol}')">Open</button>
+  </td>
+</tr>`;
         notifyUser('24h TopVol-Red Break: '+r.symbol, `redVol ${fmt(m.redBaseVol)} -> greenVol ${fmt(m.greenBaseVol)} — redCount24h: ${m.redCount24h}`, r.symbol);
       }
       html += '</tbody></table></div>';

@@ -899,10 +899,13 @@ document.getElementById('redFailList').innerHTML =
   const m = r.match;
 
   // 🛡️ HARD GUARD — prevents undefined.high crash
-  if (!m || !m.redCandle || !m.greenCandle) {
-    console.warn('Invalid match skipped:', r.symbol, r);
-    continue;
-  }
+  if (
+  r.absorptionType !== 'red-failure' &&
+  (!m || !m.redCandle || !m.greenCandle)
+) {
+  console.warn('Invalid match skipped:', r.symbol, r);
+  continue;
+}
 
   // 🔔 ONLY GREEN ABSORPTION NOTIFICATION
   if (r.absorptionType === 'green') {

@@ -796,7 +796,7 @@ for (const p of emaOkSymbols) {
         results.push({
           symbol: p.symbol,
           pct: p.pct,
-          match: postCont,
+          match,
           absorptionType: 'post-continuation'
         });
 
@@ -898,7 +898,14 @@ document.getElementById('redFailList').innerHTML =
 <tbody>
 `;
       for(const r of results){
-        const m = r.match;
+      for (const r of results) {
+  const m = r.match;
+
+  // 🛡️ HARD GUARD — prevents undefined.high crash
+  if (!m || !m.redCandle || !m.greenCandle) {
+    console.warn('Invalid match skipped:', r.symbol, r);
+    continue;
+  }
 
   // 🔔 ONLY GREEN ABSORPTION NOTIFICATION
   if (r.absorptionType === 'green') {
@@ -909,29 +916,26 @@ RedVol: ${fmt(m.redBaseVol)} → GreenVol: ${fmt(m.greenBaseVol)}`,
       r.symbol
     );
   }
-        
-        html += `<tr class="match-row">
-  <td>${r.symbol}</td>
-  <td>${Number(r.pct).toFixed(2)}%</td>
-  <td>${m.redCount24h ?? '-'}</td>
-  <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
-  <td>${fmt(m.redBaseVol)}</td>
-  <td>${fmtPrice(m.redCandle.high)}</td>
-  <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
-  <td class="ok">${fmt(m.greenBaseVol)}</td>
-  <td>${fmtPrice(m.greenCandle.high)}</td>
 
-  <td>
-  ${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}
-</td>
-<td>
-  ${r.volAI ? r.volAI.meaning : '-'}
-</td>
+  html += `<tr class="match-row">
+    <td>${r.symbol}</td>
+    <td>${Number(r.pct).toFixed(2)}%</td>
+    <td>${m.redCount24h ?? '-'}</td>
+    <td>${fmtTime(last24IndexToAbsTime(m.redIndex24h, klinesMap[r.symbol]))}</td>
+    <td>${fmt(m.redBaseVol)}</td>
+    <td>${fmtPrice(m.redCandle.high)}</td>
+    <td>${fmtTime(last24IndexToAbsTime(m.greenIndex24h, klinesMap[r.symbol]))}</td>
+    <td class="ok">${fmt(m.greenBaseVol)}</td>
+    <td>${fmtPrice(m.greenCandle.high)}</td>
 
-  <td>
-    <button onclick="openSymbol('${r.symbol}')">Open</button>
-  </td>
-</tr>`;}
+    <td>${r.volAI ? `${r.volAI.color} @ ${r.volAI.location}` : '-'}</td>
+    <td>${r.volAI ? r.volAI.meaning : '-'}</td>
+
+    <td>
+      <button onclick="openSymbol('${r.symbol}')">Open</button>
+    </td>
+  </tr>`;
+}
       
       html += '</tbody></table></div>';
       el.innerHTML = html;

@@ -560,21 +560,45 @@ document.getElementById('dominance24h').textContent = domText;
       const greenDayHighSymbols = [];
       const noBreakerSymbols = [];
 
-      for(const p of emaOkSymbols){
-        try{
-          const kl = klinesMap[p.symbol];
-          const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
-          const volAI = detect24hVolumeLocationAI(kl);
-          if(match && match.found){
-            results.push({symbol:p.symbol, pct:p.pct, match});
-            topVolRedSymbols.push(p.symbol);
-          }
-          else if(match && match.reason === 'top_volume_not_red'){ counts.topNotRed++; topNotRedSymbols.push(p.symbol); }
-          else if(match && match.reason === 'broken_earlier_at_lower_price'){ counts.brokenLower++; brokenLowerSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
-          else if(match && match.reason === 'green_made_day_high'){ counts.greenDayHigh++; greenDayHighSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
-          else if(match && match.reason === 'no_later_green_breaker'){ counts.noBreaker++; noBreakerSymbols.push(p.symbol); topVolRedSymbols.push(p.symbol); }
-        }catch(e){ console.warn('phase B failed for', p.symbol, e.message); }
-      }
+      for (const p of emaOkSymbols) {
+  try {
+    const kl = klinesMap[p.symbol];
+    const match = detect24hTopVolMustBeRed_thenBreak_baseVol(kl, volRatio);
+    const volAI = detect24hVolumeLocationAI(kl);
+
+    if (match && match.found) {
+      results.push({
+        symbol: p.symbol,
+        pct: p.pct,
+        match,
+        volAI
+      });
+      topVolRedSymbols.push(p.symbol);
+    }
+    else if (match && match.reason === 'top_volume_not_red') {
+      counts.topNotRed++;
+      topNotRedSymbols.push(p.symbol);
+    }
+    else if (match && match.reason === 'broken_earlier_at_lower_price') {
+      counts.brokenLower++;
+      brokenLowerSymbols.push(p.symbol);
+      topVolRedSymbols.push(p.symbol);
+    }
+    else if (match && match.reason === 'green_made_day_high') {
+      counts.greenDayHigh++;
+      greenDayHighSymbols.push(p.symbol);
+      topVolRedSymbols.push(p.symbol);
+    }
+    else if (match && match.reason === 'no_later_green_breaker') {
+      counts.noBreaker++;
+      noBreakerSymbols.push(p.symbol);
+      topVolRedSymbols.push(p.symbol);
+    }
+
+  } catch (e) {
+    console.warn('phase B failed for', p.symbol, e.message);
+  }
+}
 
       // update ignored lists UI
       document.getElementById('cntTopNotRed').textContent = counts.topNotRed;

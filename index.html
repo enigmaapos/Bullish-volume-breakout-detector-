@@ -279,13 +279,6 @@
       document.getElementById('blacklistInfo').textContent = `Blacklist: ${blacklist.length} symbols filtered`;
     });
 
-    // =====================
-// DETECTION WINDOW (15m)
-// =====================
-const DETECT_HOURS = 42;
-const CANDLES_PER_HOUR = 4;
-const DETECT_BARS = DETECT_HOURS * CANDLES_PER_HOUR; // 168 bars
-
     const API_BASE = 'https://fapi.binance.com';
     const INTERVAL = '15m';
     const KLINES_LIMIT = 300;
@@ -352,10 +345,10 @@ const DETECT_BARS = DETECT_HOURS * CANDLES_PER_HOUR; // 168 bars
     }
 
     // detector (kept same as in your last version)
-  function detect42hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
-  if (!klines || klines.length < DETECT_BARS) return null;
+    function detect24hTopVolMustBeRed_thenBreak_baseVol(klines, volRatio = 1.0){
+  if (!klines || klines.length < 96) return null;
 
-  const windowBars = klines.slice(-DETECT_BARS).map(c => ({
+  const last24h = klines.slice(-96).map(c => ({
     openTime: c.openTime,
     open: safeNum(c.open),
     high: safeNum(c.high),
@@ -364,13 +357,13 @@ const DETECT_BARS = DETECT_HOURS * CANDLES_PER_HOUR; // 168 bars
     baseVol: safeNum(c.baseVol)
   }));
 
-  // 1️⃣ Find highest-volume candle in 42h
-  let top = windowBars[0];
+  // 1️⃣ Find highest-volume candle in 24h
+  let top = last24h[0];
   let topIdx = 0;
 
-  for (let i = 1; i < windowBars.length; i++) {
-    if (windowBars[i].baseVol > top.baseVol) {
-      top = windowBars[i];
+  for (let i = 1; i < last24h.length; i++) {
+    if (last24h[i].baseVol > top.baseVol) {
+      top = last24h[i];
       topIdx = i;
     }
   }
@@ -385,29 +378,29 @@ const DETECT_BARS = DETECT_HOURS * CANDLES_PER_HOUR; // 168 bars
   }
 
   // 2️⃣ Look for GREEN absorber AFTER it
-  for (let j = topIdx + 1; j < windowBars.length; j++) {
-    const g = windowBars[j];
+  for (let j = topIdx + 1; j < last24h.length; j++) {
+    const g = last24h[j];
 
-    if (g.close <= g.open) continue;                   // must be green
+    if (g.close <= g.open) continue;                 // must be green
     if (g.baseVol < top.baseVol * volRatio) continue; // must absorb volume
 
-    // ✅ VALID ABSORPTION: volume breaks but price stays lower
+    // ✅ THIS IS YOUR ONLY VALID CONDITION
     if (g.high < top.high) {
       return {
         found: true,
         type: 'absorption_lower_price',
         intent: 'Cooling / Re-accumulation',
         strength: 'Moderate',
-        redIndex42h: topIdx,
+        redIndex24h: topIdx,
         redCandle: top,
-        greenIndex42h: j,
+        greenIndex24h: j,
         greenCandle: g,
         redBaseVol: top.baseVol,
         greenBaseVol: g.baseVol
       };
     }
 
-    // Volume breaks but price goes higher → ignore
+    // If volume breaks but price goes higher → ignore
     return {
       found: false,
       reason: 'volume_break_but_price_higher'
@@ -418,7 +411,7 @@ const DETECT_BARS = DETECT_HOURS * CANDLES_PER_HOUR; // 168 bars
     found: false,
     reason: 'no_later_green_absorber'
   };
-}
+    }
 
     function detectRedFailureAbsorption(klines, ratio = 0.6){
   if(!klines || klines.length < 96) return null;

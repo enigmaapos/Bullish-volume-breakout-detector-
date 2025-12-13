@@ -838,29 +838,31 @@ renderAITop30(aiSorted);
   <tbody>`;
 
   list.forEach((r,i)=>{
-    html += `<tr>
-      <td>${i+1}</td>
-      <td><strong>${r.symbol}</strong></td>
-      <td>${r.pct.toFixed(2)}%</td>
+  const interp = interpretProbability(r.probability); // ✅ FIX
 
-      <td class="${r.volAI.color === 'GREEN' ? 'vol-green' : 'vol-red'}">
-        ${r.volAI.color}
-      </td>
+  html += `<tr>
+    <td>${i+1}</td>
+    <td><strong>${r.symbol}</strong></td>
+    <td>${r.pct.toFixed(2)}%</td>
 
-      <td class="${locClass(r.volAI.location)}">
-        ${r.volAI.location}
-      </td>
+    <td class="${r.volAI.color === 'GREEN' ? 'vol-green' : 'vol-red'}">
+      ${r.volAI.color}
+    </td>
 
-      <td class="${meaningClass(r.volAI.meaning)}">
-        ${r.volAI.meaning}
-      </td>
+    <td class="${locClass(r.volAI.location)}">
+      ${r.volAI.location}
+    </td>
 
-      <td class="${probClass(r.probability)}">
-  <strong>${r.probability}%</strong>
-  <small>${interp.label}</small>
-</td>
-    </tr>`;
-  });
+    <td class="${meaningClass(r.volAI.meaning)}">
+      ${r.volAI.meaning}
+    </td>
+
+    <td class="${probClass(r.probability)}" title="${interp.note}">
+      <strong>${r.probability}%</strong>
+      <small>${interp.label}</small>
+    </td>
+  </tr>`;
+});
 
   html += '</tbody></table></div>';
   el.innerHTML = html;

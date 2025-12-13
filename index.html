@@ -827,6 +827,10 @@ if (redFail && redFail.found === true) {
     absorptionType: 'red-failure'
   });
 }
+    } catch (e) {
+    console.warn('Phase B failed:', p.symbol, e.message);
+  }
+} // ✅ CLOSE for-loop
        
     
       // update ignored lists UI
